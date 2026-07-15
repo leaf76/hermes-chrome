@@ -266,15 +266,29 @@ function startPolling() {
   const generation = pollGeneration;
   polling = true;
   pollLoop(generation);
+  // Keep service worker eligible for wake-ups (MV3).
+  try {
+    chrome.alarms.create("hermes-chrome-poll", { periodInMinutes: 1 });
+  } catch {
+    /* ignore */
+  }
 }
 
 function stopPolling() {
   polling = false;
   pollGeneration += 1;
+  try {
+    chrome.alarms.clear("hermes-chrome-poll");
+  } catch {
+    /* ignore */
+  }
 }
 
 chrome.runtime.onInstalled.addListener(() => startPolling());
 chrome.runtime.onStartup.addListener(() => startPolling());
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "hermes-chrome-poll") startPolling();
+});
 startPolling();
 
 chrome.storage.onChanged.addListener((changes, area) => {
