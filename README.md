@@ -77,6 +77,27 @@ Override root: `HERMES_CHROME_ROOT=/path/to/this/repo`
 
 See `store/UPLOAD_GUIDE.md`.
 
+## Capture (TradingView / gold)
+
+```bash
+./scripts/hermes-chrome.sh list-tv
+./scripts/hermes-chrome.sh capture --prefer gc --out /tmp/gc.png
+```
+
+Gold pipeline (`~/gold-usd-report`) auto order:
+
+1. CDP (if up)
+2. **Hermes Chrome** `captureVisibleTab` via bridge `:19876`
+3. macOS screencapture window (fallback)
+
+```bash
+TV_CAPTURE_BACKEND=hermes-chrome ./.venv/bin/python -c \
+  'from tv_capture import capture_tradingview; print(capture_tradingview(prefer="gc"))'
+# skip in auto: TV_HERMES_CHROME=0
+```
+
+Requires extension **v1.1.0+** reloaded + icon clicked; GC!/NQ! tabs open.
+
 ## Related (outside this repo)
 
 - **Headless** Hermes `browser_*` tools — default for public pages

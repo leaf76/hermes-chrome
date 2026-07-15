@@ -97,31 +97,20 @@ cmd_bridge_stop() {
 }
 
 # POST command and wait for extension result.
-send_cmd() {
-  local action="$1"
-  shift || true
-  local url="${1:-}"
+# Usage: send_cmd <action> [url]
+#        send_cmd_json '{"action":"capture","prefer":"gc"}'
+send_cmd_json() {
+  local payload="$1"
   cmd_bridge_start
-
-  local payload id
-  if [[ -n "$url" ]]; then
-    payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":sys.argv[1],"url":sys.argv[2]}))' "$action" "$url")"
-  else
-    payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":sys.argv[1]}))' "$action")"
-  fi
-
-  local resp
-  resp="$(curl -fsS --max-time 5 -H 'Content-Type: application/json' -d "$payload" "${BRIDGE_URL}/v1/command")"
+  local resp id result
+  resp="$(curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$payload" "${BRIDGE_URL}/v1/command")"
   id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$resp")"
-
-  # Wait for extension (must be installed + service worker polling)
-  local result
-  if ! result="$(curl -fsS --max-time 35 "${BRIDGE_URL}/v1/result/${id}?timeout=30")"; then
-    die "no response from extension (timeout). Load unpacked extension from:
+  # capture payloads can be large — longer wait
+  if ! result="$(curl -fsS --max-time 90 "${BRIDGE_URL}/v1/result/${id}?timeout=75")"; then
+    die "no response from extension (timeout). Load unpacked + click icon.
   ${EXT_DIR}
-Then open the extension popup once so polling starts. Bridge is at ${BRIDGE_URL}"
+Bridge: ${BRIDGE_URL}"
   fi
-
   python3 - <<'PY' "$result"
 import json, sys
 r = json.loads(sys.argv[1])
@@ -131,6 +120,19 @@ if not r.get("ok"):
 data = r.get("data")
 print(json.dumps(data if data is not None else r, indent=2, ensure_ascii=False))
 PY
+}
+
+send_cmd() {
+  local action="$1"
+  shift || true
+  local url="${1:-}"
+  local payload
+  if [[ -n "$url" ]]; then
+    payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":sys.argv[1],"url":sys.argv[2]}))' "$action" "$url")"
+  else
+    payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":sys.argv[1]}))' "$action")"
+  fi
+  send_cmd_json "$payload"
 }
 
 cmd_start() {
@@ -165,6 +167,47 @@ cmd_ping() {
   send_cmd ping
 }
 
+cmd_list_tv() {
+  send_cmd list_tv
+}
+
+cmd_capture() {
+  # hermes-chrome.sh capture [--prefer gc|nq|auto] [--out path.png]
+  local prefer="auto"
+  local out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prefer|-p) prefer="${2:-auto}"; shift 2 ;;
+      --out|-o) out="${2:-}"; shift 2 ;;
+      gc|nq|auto|active) prefer="$1"; shift ;;
+      *.png|*.jpg|*.webp) out="$1"; shift ;;
+      *) die "usage: $0 capture [--prefer gc|nq|auto] [--out path.png]" ;;
+    esac
+  done
+  [[ -n "$out" ]] || out="${RUN_DIR}/capture-${prefer}-$(date +%Y%m%d-%H%M%S).png"
+  mkdir -p "$(dirname "$out")"
+  local payload
+  payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":"capture","prefer":sys.argv[1]}))' "$prefer")"
+  local result
+  result="$(send_cmd_json "$payload")"
+  python3 - <<'PY' "$result" "$out"
+import base64, json, sys
+from pathlib import Path
+data = json.loads(sys.argv[1])
+out = Path(sys.argv[2])
+b64 = data.get("pngBase64") or ""
+if not b64:
+    print("error: no pngBase64 in response", file=sys.stderr)
+    sys.exit(1)
+raw = base64.b64decode(b64)
+out.write_bytes(raw)
+meta = {k: data.get(k) for k in ("title", "url", "tabId", "prefer", "bytes") if k in data}
+meta["path"] = str(out.resolve())
+meta["saved_bytes"] = len(raw)
+print(json.dumps(meta, indent=2, ensure_ascii=False))
+PY
+}
+
 cmd_install_help() {
   cat <<EOF
 Install Hermes Chrome extension (one-time):
@@ -178,25 +221,28 @@ Install Hermes Chrome extension (one-time):
    - Select: ${EXT_DIR}
 
 3. Pin the extension, click its icon once (starts long-poll).
+   After upgrades, click Reload on the extension card.
 
 4. Test:
      $0 ping
+     $0 list-tv
+     $0 capture --prefer gc --out /tmp/gc.png
      $0 start https://example.com/
      $0 status
      $0 stop
 
 Notes:
 - Default workspace: Chrome Tab Group titled "Hermes" (blue, configurable).
-- Tabs open with active:false to reduce focus steal.
+- capture uses chrome.tabs.captureVisibleTab (needs tradingview host permission).
 - Not the same as Agent Chrome profile (~/.hermes/chrome-debug).
-- Fallback without extension: daily-chrome-agent-window.sh (named window only).
+- Gold pipeline: set TV_CAPTURE_BACKEND=hermes-chrome (optional; falls back).
 EOF
 }
 
 usage() {
   sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
   echo
-  echo "commands: start|open|new-tab|status|stop|ping|bridge-start|bridge-stop|bridge-status|install-help"
+  echo "commands: start|open|new-tab|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|install-help"
 }
 
 main() {
@@ -209,6 +255,8 @@ main() {
     status)         cmd_status ;;
     stop)           cmd_stop ;;
     ping)           cmd_ping ;;
+    list-tv|list_tv) cmd_list_tv ;;
+    capture)        cmd_capture "$@" ;;
     bridge-start)   cmd_bridge_start ;;
     bridge-stop)    cmd_bridge_stop ;;
     bridge-status)  cmd_bridge_status ;;

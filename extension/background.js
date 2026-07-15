@@ -184,6 +184,120 @@ async function stopGroup({ closeTabs = true } = {}) {
   return { stopped: true, closed };
 }
 
+/** Match GC/NQ continuous titles; never treat MGC as GC. */
+function classifyTvTab(title, url) {
+  const ti = title || "";
+  const u = url || "";
+  const isMgc = /^MGC/i.test(ti) || /MGC/i.test(u);
+  let isGC =
+    /^(GC1!|GC!)/i.test(ti) ||
+    /symbol=GC1|symbol=GC!|symbol=GC%21|COMEX%3AGC|COMEX:GC|CME%3AGC/i.test(u);
+  if (isMgc) isGC = false;
+  const isNQ =
+    /^(NQ1!|NQ!|MNQ)/i.test(ti) ||
+    /symbol=NQ1|symbol=NQ!|symbol=NQ%21|CME%3ANQ|CME:NQ|symbol=MNQ/i.test(u);
+  const isChart = /tradingview\.com\/chart/i.test(u);
+  return { isGC, isNQ, isChart, isMgc };
+}
+
+async function findTradingViewTab(prefer) {
+  const mode = (prefer || "auto").toLowerCase();
+  const tabs = await chrome.tabs.query({});
+  let gc = null;
+  let nq = null;
+  let fallback = null;
+  for (const t of tabs) {
+    const { isGC, isNQ, isChart } = classifyTvTab(t.title, t.url);
+    if (!isChart && !isGC && !isNQ) {
+      // still allow title-only GC/NQ even if URL not chart (SPA)
+      if (!isGC && !isNQ) continue;
+    }
+    if (!isChart && !(t.url || "").includes("tradingview.com")) continue;
+    if (isGC && !gc) gc = t;
+    else if (isNQ && !nq) nq = t;
+    else if (!fallback && isChart) fallback = t;
+  }
+  if (mode === "gc") {
+    if (!gc) throw new Error("no GC TradingView chart tab open");
+    return gc;
+  }
+  if (mode === "nq") {
+    if (!nq) throw new Error("no NQ TradingView chart tab open");
+    return nq;
+  }
+  return gc || nq || fallback || null;
+}
+
+/**
+ * Capture a TradingView (or active) tab as PNG data URL.
+ * Activates the tab briefly so captureVisibleTab can see it.
+ */
+async function captureTab(cmd) {
+  const prefer = (cmd.prefer || cmd.product || "auto").toLowerCase();
+  let tab = null;
+  if (cmd.tabId) {
+    tab = await chrome.tabs.get(Number(cmd.tabId));
+  } else if (prefer === "active") {
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    tab = active;
+  } else {
+    tab = await findTradingViewTab(prefer);
+  }
+  if (!tab) throw new Error("no matching tab to capture");
+
+  // Make tab visible in its window (required for captureVisibleTab).
+  await chrome.tabs.update(tab.id, { active: true });
+  if (tab.windowId != null) {
+    try {
+      await chrome.windows.update(tab.windowId, { focused: false });
+    } catch {
+      /* ignore — avoid focus steal when possible */
+    }
+  }
+  // small settle for TV canvas
+  await new Promise((r) => setTimeout(r, Number(cmd.settleMs) || 400));
+
+  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+    format: "png",
+  });
+  if (!dataUrl || !dataUrl.startsWith("data:image/png")) {
+    throw new Error("captureVisibleTab returned empty/non-png");
+  }
+  // strip prefix for smaller JSON transfer
+  const b64 = dataUrl.replace(/^data:image\/png;base64,/, "");
+  const refreshed = await chrome.tabs.get(tab.id);
+  return {
+    tabId: tab.id,
+    windowId: tab.windowId,
+    title: refreshed.title || tab.title || "",
+    url: refreshed.url || tab.url || "",
+    prefer,
+    mime: "image/png",
+    encoding: "base64",
+    pngBase64: b64,
+    bytes: Math.floor((b64.length * 3) / 4),
+  };
+}
+
+async function listTvTabs() {
+  const tabs = await chrome.tabs.query({});
+  const out = [];
+  for (const t of tabs) {
+    const c = classifyTvTab(t.title, t.url);
+    if (c.isChart || c.isGC || c.isNQ) {
+      out.push({
+        id: t.id,
+        title: t.title,
+        url: t.url,
+        active: t.active,
+        groupId: t.groupId,
+        ...c,
+      });
+    }
+  }
+  return { tabs: out };
+}
+
 async function handleCommand(cmd) {
   switch (cmd.action) {
     case "ping":
@@ -205,6 +319,11 @@ async function handleCommand(cmd) {
       return await status();
     case "stop":
       return await stopGroup({ closeTabs: cmd.closeTabs !== false });
+    case "capture":
+      return await captureTab(cmd);
+    case "list_tv":
+    case "list-tv":
+      return await listTvTabs();
     default:
       throw new Error(`unknown action: ${cmd.action}`);
   }
