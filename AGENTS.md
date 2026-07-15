@@ -1,27 +1,30 @@
-# hermes-agent-tabgroup — agent notes
+# hermes-chrome — agent notes
 
 ## Scope
 
-- Chrome MV3 extension + local bridge for Hermes daily-Chrome Tab Groups.
-- Not the isolated Agent Chrome profile (`~/.hermes/chrome-debug`).
+Chrome companion for Hermes / local agents: operate the **user daily Chrome**
+safely (workspace isolation, CLI bridge). Tab Groups are a feature, not the
+product boundary.
 
 ## Rules
 
+- Prefer agent-friendly Chrome ops that do **not** hijack the user's active tab.
 - Keep host permissions localhost-only unless product decision changes.
 - Do not commit runtime pid/log or browser profiles.
-- Bump `extension/manifest.json` version when shipping CWS updates; re-run `store/package.sh`.
-- Prefer Traditional Chinese for user-facing plans; English for code/UI strings/store EN listing.
+- Bump `extension/manifest.json` version for CWS updates; run `store/package.sh`.
+- User-facing plans: Traditional Chinese. Code / store EN / UI strings: English.
 
 ## Validate
 
 ```bash
-./scripts/daily-chrome-tabgroup.sh bridge-start
-./scripts/daily-chrome-tabgroup.sh ping   # needs extension loaded + icon click
+./scripts/hermes-chrome.sh bridge-start
+./scripts/hermes-chrome.sh ping   # needs extension loaded + icon click
 ./store/package.sh
 ```
 
 ## Paths
 
-- Repo: this directory
-- Hermes wrappers: `~/.hermes/scripts/daily-chrome-tabgroup.sh` (thin)
-- Runtime: `~/.hermes/run/daily-chrome-agent/`
+- Repo: this directory (also known historically as hermes-agent-tabgroup)
+- CLI: `scripts/hermes-chrome.sh`
+- Hermes wrappers: `~/.hermes/scripts/hermes-chrome.sh`
+- Runtime: `~/.hermes/run/hermes-chrome/`

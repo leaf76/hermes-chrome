@@ -1,6 +1,6 @@
 const DEFAULTS = {
   bridgeUrl: "http://127.0.0.1:19876",
-  groupTitle: "Hermes Agent",
+  groupTitle: "Hermes",
   groupColor: "blue",
   pollingEnabled: true,
 };

@@ -18,7 +18,7 @@ async function refresh() {
   setBadge(
     groupBadge,
     s.running ? true : null,
-    s.running ? s.title || "Hermes Agent" : "none"
+    s.running ? s.title || "Hermes" : "none"
   );
 }
 

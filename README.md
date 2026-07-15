@@ -1,55 +1,82 @@
-# hermes-agent-tabgroup
+# hermes-chrome
 
-Chrome extension + local bridge that gives Hermes / local CLIs a **real**
-Chrome Tab Group workspace on the user's everyday Chrome profile.
+**Repo:** https://github.com/leaf76/hermes-chrome  
 
-**Repo:** https://github.com/leaf76/hermes-agent-tabgroup  
+Local companion that makes **Chrome easy for Hermes / local AI agents to operate**—without hijacking the tab you are using.
 
-**Privacy policy (for Chrome Web Store):**  
-https://github.com/leaf76/hermes-agent-tabgroup/blob/main/store/privacy-policy.md
+Tab Groups are one isolation tool, not the whole product.
+
+**Privacy policy (Chrome Web Store):**  
+https://github.com/leaf76/hermes-chrome/blob/main/store/privacy-policy.md
+
+## What it is for
+
+| Goal | How |
+|------|-----|
+| Drive Chrome from a CLI / Hermes | Local bridge + Chrome extension |
+| Keep your active browsing | Agent work goes to a dedicated workspace (Tab Group by default) |
+| Reuse your real cookies / SSO | Runs on **daily Chrome**, not a headless-only sandbox |
+| Reduce focus steal | New tabs default to `active: false`; no AppleScript `activate` |
+
+## Features (today)
+
+1. **Agent workspace** — native Chrome Tab Group (`Hermes` / configurable title)
+2. **CLI** — `start` / `open` / `new-tab` / `status` / `stop` / `ping`
+3. **Local bridge** — `127.0.0.1:19876` queue between CLI and extension
+4. **Fallback** — named window helper if you cannot load the extension yet
+
+## Planned / non-goals
+
+- **Planned:** richer Chrome ops that stay agent-friendly (more status, safer defaults, optional auth on bridge)
+- **Non-goal:** replace headless browser tools for public pages; replace Agent Chrome isolated profile when you do not need daily cookies
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `extension/` | MV3 Chrome extension (CWS package source) |
-| `bridge.py` | Local HTTP queue on `127.0.0.1:19876` |
-| `scripts/daily-chrome-tabgroup.sh` | CLI |
-| `scripts/daily-chrome-agent-window.sh` | Fallback: named window (no real group) |
+| `extension/` | MV3 Chrome extension |
+| `bridge.py` | Local HTTP bridge (`127.0.0.1:19876`) |
+| `scripts/hermes-chrome.sh` | Main CLI |
+| `scripts/daily-chrome-tabgroup.sh` | Backward-compatible alias → `hermes-chrome.sh` |
+| `scripts/daily-chrome-agent-window.sh` | Named-window fallback (no extension) |
 | `store/` | CWS listing, privacy policy, package script |
 
-Runtime state (pid/log) defaults to `~/.hermes/run/daily-chrome-agent/` — not in this repo.
+Runtime pid/log: `~/.hermes/run/hermes-chrome/` (not in git).
 
 ## Quick start
 
 ```bash
-# bridge + CLI (from repo)
-./scripts/daily-chrome-tabgroup.sh bridge-start
-# Load unpacked: ./extension  (or install from CWS when published)
-# Click extension icon once
-./scripts/daily-chrome-tabgroup.sh ping
-./scripts/daily-chrome-tabgroup.sh start 'https://example.com/'
-./scripts/daily-chrome-tabgroup.sh stop
+./scripts/hermes-chrome.sh bridge-start
+# Chrome → Load unpacked → ./extension  (or install from CWS when published)
+# Click the extension icon once
+./scripts/hermes-chrome.sh ping
+./scripts/hermes-chrome.sh start 'https://example.com/'
+./scripts/hermes-chrome.sh open 'https://example.org/'
+./scripts/hermes-chrome.sh status
+./scripts/hermes-chrome.sh stop
 ```
 
-Hermes thin wrappers (if installed):
+Hermes wrapper (if present):
 
 ```bash
+~/.hermes/scripts/hermes-chrome.sh …
+# legacy alias still works:
 ~/.hermes/scripts/daily-chrome-tabgroup.sh …
 ```
 
-Override root: `HERMES_DAILY_CHROME_ROOT=/path/to/this/repo`
+Override root: `HERMES_CHROME_ROOT=/path/to/this/repo`
 
 ## Chrome Web Store
 
 ```bash
 ./store/package.sh
-# → store/dist/hermes-agent-tabgroup-vX.Y.Z.zip
+# → store/dist/hermes-chrome-vX.Y.Z.zip
 ```
 
-See `store/UPLOAD_GUIDE.md`. Host `store/privacy-policy.md` publicly before submit.
+See `store/UPLOAD_GUIDE.md`.
 
-## Related (not in this repo)
+## Related (outside this repo)
 
-- Agent Chrome isolated profile: `~/.hermes/scripts/agent-chrome.sh` + `~/.hermes/chrome-debug`
-- Hermes prefs: AI-Memory `Memory/preferences.md` (browser two/three-mode policy)
+- **Headless** Hermes `browser_*` tools — default for public pages
+- **Agent Chrome** isolated profile — `~/.hermes/scripts/agent-chrome.sh` + `~/.hermes/chrome-debug`
+- Hermes prefs — AI-Memory `Memory/preferences.md`

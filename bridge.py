@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Hermes daily-Chrome Tab Group bridge.
+"""Hermes Chrome — local bridge.
 
-Local HTTP queue between Hermes CLI and the Chrome extension service worker.
+HTTP queue between Hermes / agent CLI and the Hermes Chrome extension.
 
   Extension long-polls:  GET  /v1/poll?timeout=25
-  Hermes enqueues:       POST /v1/command  {id, action, ...}
+  CLI enqueues:          POST /v1/command  {id, action, ...}
   Extension reports:     POST /v1/result   {id, ok, data|error}
-  Hermes waits:          GET  /v1/result/<id>?timeout=30
+  CLI waits:             GET  /v1/result/<id>?timeout=30
 
-Bind: 127.0.0.1:19876 only.
+Bind: 127.0.0.1:19876 only (no remote exposure by default).
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "ok": True,
-                    "service": "hermes-tabgroup-bridge",
+                    "service": "hermes-chrome-bridge",
                     "uptime_s": round(time.time() - _started_at, 1),
                     "queued": _cmd_q.qsize(),
                 },
@@ -140,7 +140,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"hermes-tabgroup-bridge listening on http://{HOST}:{PORT}", flush=True)
+    print(f"hermes-chrome-bridge listening on http://{HOST}:{PORT}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

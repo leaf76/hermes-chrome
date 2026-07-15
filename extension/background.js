@@ -1,17 +1,19 @@
 /**
- * Hermes Agent Tab Group — MV3 service worker (Chrome Web Store build)
+ * Hermes Chrome — MV3 service worker (Chrome Web Store build)
+ *
+ * Local companion so Hermes / agent CLIs can operate daily Chrome without
+ * hijacking the user's active tab. Default workspace is a Tab Group; more
+ * Chrome ops can land here without renaming the product.
  *
  * Long-polls a user-run local bridge (default http://127.0.0.1:19876).
- * Owns one native Chrome Tab Group for Hermes / local agent CLI tools.
  * No remote analytics. No third-party network calls.
  */
 
 const DEFAULT_BRIDGE = "http://127.0.0.1:19876";
-const GROUP_TITLE = "Hermes Agent";
+const GROUP_TITLE = "Hermes";
 const GROUP_COLOR = "blue";
-const GROUP_KEY = "hermesAgentGroupId";
+const GROUP_KEY = "hermesChromeGroupId";
 const SETTINGS_KEY = "settings";
-
 let polling = false;
 let pollGeneration = 0;
 
@@ -126,7 +128,7 @@ async function status() {
       bridgeUrl: settings.bridgeUrl,
       bridgeOk,
       polling: polling && settings.pollingEnabled,
-      extension: "hermes-agent-tabgroup",
+      extension: "hermes-chrome",
       version: chrome.runtime.getManifest().version,
     };
   }
@@ -152,7 +154,7 @@ async function status() {
     bridgeUrl: settings.bridgeUrl,
     bridgeOk,
     polling: polling && settings.pollingEnabled,
-    extension: "hermes-agent-tabgroup",
+    extension: "hermes-chrome",
     version: chrome.runtime.getManifest().version,
   };
 }
@@ -187,7 +189,7 @@ async function handleCommand(cmd) {
     case "ping":
       return {
         pong: true,
-        extension: "hermes-agent-tabgroup",
+        extension: "hermes-chrome",
         version: chrome.runtime.getManifest().version,
       };
     case "start":

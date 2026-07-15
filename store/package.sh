@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXT="$ROOT/extension"
 DIST="$ROOT/store/dist"
 VER=$(python3 -c "import json;print(json.load(open('$EXT/manifest.json'))['version'])")
-NAME="hermes-agent-tabgroup-v${VER}"
+NAME="hermes-chrome-v${VER}"
 OUT="$DIST/${NAME}.zip"
 mkdir -p "$DIST"
 rm -f "$OUT"

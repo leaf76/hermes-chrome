@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Hermes Agent Tab Group",
+  "name": "Hermes Chrome",
   "version": "1.0.0",
-  "description": "Create a dedicated Chrome Tab Group for Hermes and local AI agent browser tasks—without hijacking the tab you are using.",
+  "description": "Make Chrome easy for Hermes and local AI agents to operate—dedicated workspace, less focus-stealing, local CLI bridge only.",
   "permissions": [
     "tabs",
     "tabGroups",
@@ -16,7 +16,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Hermes Agent Tab Group",
+    "default_title": "Hermes Chrome",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

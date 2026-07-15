@@ -1,35 +1,37 @@
 # Chrome Web Store listing (English)
 
 ## Name
-Hermes Agent Tab Group
+Hermes Chrome
 
-## Short description (132 chars max)
-Dedicated Chrome Tab Group for Hermes & local AI agents—work in the background without hijacking your active tab.
+## Short description (≤132 chars)
+Make Chrome easy for Hermes & local AI agents—dedicated workspace, less focus-stealing, local CLI only.
 
 ## Detailed description
 
-Hermes Agent Tab Group gives local AI agents a real Chrome Tab Group to work in—similar in spirit to how modern coding agents isolate browser work—without taking over the tab you are reading.
+Hermes Chrome is a local companion that helps AI agents (Hermes and other CLIs) operate your real Chrome safely.
 
-**What it does**
-• Creates a native Tab Group titled “Hermes Agent” (color configurable)
-• Opens and updates tabs with active:false to reduce focus stealing
+It is not limited to a single UI trick: the goal is **agent-friendly Chrome control**—keep your active browsing, reuse cookies/SSO when needed, and give the agent a clear workspace.
+
+**What it does today**
+• Creates a dedicated Chrome Tab Group workspace (default title “Hermes”, configurable)
+• Opens/updates agent tabs with active:false to reduce focus stealing
 • Talks only to a local companion bridge on 127.0.0.1:19876
-• Status popup shows bridge online/offline and current group tabs
+• Popup shows bridge online/offline and current agent workspace tabs
 
 **Who it is for**
-Developers using Hermes Agent or other local CLIs that need authenticated browser flows (cookies already in Chrome) while keeping research tabs separate from the agent’s workspace.
+Developers using Hermes Agent or other local CLIs that need authenticated browser flows while keeping personal browsing separate from agent work.
 
 **How to use**
 1. Install this extension
-2. Run the local bridge that ships with Hermes (`bridge.py` / `daily-chrome-tabgroup.sh`)
+2. Run the local bridge from the hermes-chrome repo (`bridge.py` / `hermes-chrome.sh`)
 3. Click the extension icon once so polling starts
 4. From your terminal: start / open / new-tab / status / stop
 
 **Privacy**
-No cloud account. No analytics. The extension does not send your browsing data to remote servers—only to a bridge process you run locally.
+No cloud account. No analytics. The extension does not send browsing data to remote servers—only to a bridge process you run locally.
 
 **Note**
-This extension alone does not run an AI model. It is the browser half of a local agent workflow.
+This extension alone does not run an AI model. It is the browser half of a local agent workflow. Tab Groups are the default isolation mechanism; the product scope is broader agent Chrome control.
 
 ## Category
 Productivity / Developer Tools
@@ -38,18 +40,18 @@ Productivity / Developer Tools
 English
 
 ## Single purpose statement (for review)
-Provide a dedicated Chrome Tab Group controlled by a local agent bridge for Hermes/local automation.
+Provide a local CLI/agent companion that operates Chrome in a dedicated workspace without hijacking the user’s active tab.
 
-## Permission justifications (paste into CWS)
+## Permission justifications
 
 **tabs**  
-Required to create, navigate, and close tabs that belong to the agent workspace without altering the user’s currently active tab when possible.
+Create, navigate, and close tabs for the agent workspace without relying on the user’s currently active tab when possible.
 
 **tabGroups**  
-Required to create and update a native Chrome Tab Group that visually and operationally isolates agent tabs.
+Create and maintain a native Chrome Tab Group as the default agent workspace isolation mechanism.
 
 **storage**  
-Required to store user settings (local bridge URL, group title, group color, polling enabled) on the device only.
+Store on-device settings (local bridge URL, workspace title/color, polling enabled).
 
 **Host permission http://127.0.0.1:19876/* and http://localhost:19876/***  
-Required to long-poll a user-run local companion bridge that queues agent commands. No remote hosts.
+Long-poll a user-run local companion bridge that queues agent commands. No remote hosts.
