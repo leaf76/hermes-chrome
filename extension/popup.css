@@ -1,0 +1,152 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0f172a;
+  --card: #1e293b;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #3b82f6;
+  --ok: #22c55e;
+  --bad: #ef4444;
+  --warn: #f59e0b;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --text: #0f172a;
+    --muted: #64748b;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 12px;
+  width: 300px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+header {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+}
+
+h1 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 650;
+}
+
+.sub {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.card {
+  background: var(--card);
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.badge.ok {
+  background: color-mix(in srgb, var(--ok) 22%, transparent);
+  color: var(--ok);
+}
+
+.badge.bad {
+  background: color-mix(in srgb, var(--bad) 22%, transparent);
+  color: var(--bad);
+}
+
+.badge.warn {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+#bridgeUrl {
+  margin: 6px 0 0;
+  word-break: break-all;
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+button {
+  flex: 1;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--accent);
+  color: white;
+}
+
+button.secondary {
+  background: rgba(148, 163, 184, 0.2);
+  color: var(--text);
+}
+
+#out {
+  max-height: 160px;
+  overflow: auto;
+  background: var(--card);
+  border-radius: 8px;
+  padding: 8px;
+  margin: 0;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  white-space: pre-wrap;
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+code {
+  font-size: 10px;
+}

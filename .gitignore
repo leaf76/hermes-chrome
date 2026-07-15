@@ -1,0 +1,21 @@
+# Runtime / local
+.DS_Store
+*.log
+*.pid
+state.env
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# Bridge runtime (should live under ~/.hermes/run/…)
+bridge.pid
+bridge.log
+
+# Optional local notes
+.idea/
+.vscode/
+*.swp
+
+# Keep store/dist zip out of git by default (rebuild with store/package.sh)
+store/dist/*.zip

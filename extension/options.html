@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hermes Agent Tab Group — Options</title>
+    <style>
+      body {
+        font: 13px/1.45 system-ui, -apple-system, sans-serif;
+        margin: 16px;
+        max-width: 420px;
+        color: #0f172a;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin: 12px 0 4px;
+      }
+      input,
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      button {
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #2563eb;
+        color: #fff;
+      }
+      button.secondary {
+        background: #e2e8f0;
+        color: #0f172a;
+      }
+      .hint {
+        color: #64748b;
+        font-size: 12px;
+      }
+      #msg {
+        margin-top: 10px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 style="font-size: 16px; margin: 0 0 4px">Hermes Agent Tab Group</h1>
+    <p class="hint">
+      Talks only to a local bridge you run on this machine (default port 19876).
+      No cloud account. No analytics.
+    </p>
+
+    <label for="bridgeUrl">Local bridge URL</label>
+    <input id="bridgeUrl" type="url" placeholder="http://127.0.0.1:19876" />
+    <p class="hint">
+      Must match host_permissions (127.0.0.1 / localhost port 19876 for the
+      published build).
+    </p>
+
+    <label for="groupTitle">Tab group title</label>
+    <input id="groupTitle" type="text" maxlength="50" />
+
+    <label for="groupColor">Tab group color</label>
+    <select id="groupColor">
+      <option value="blue">blue</option>
+      <option value="cyan">cyan</option>
+      <option value="green">green</option>
+      <option value="grey">grey</option>
+      <option value="orange">orange</option>
+      <option value="pink">pink</option>
+      <option value="purple">purple</option>
+      <option value="red">red</option>
+      <option value="yellow">yellow</option>
+    </select>
+
+    <label>
+      <input id="pollingEnabled" type="checkbox" checked />
+      Enable bridge polling
+    </label>
+
+    <div class="row">
+      <button id="save" type="button">Save</button>
+      <button id="reset" type="button" class="secondary">Reset defaults</button>
+    </div>
+    <div id="msg"></div>
+    <script src="options.js"></script>
+  </body>
+</html>

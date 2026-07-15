@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hermes Agent Tab Group</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="logo" aria-hidden="true"></div>
+      <div>
+        <h1>Hermes Agent</h1>
+        <p class="sub">Tab Group bridge</p>
+      </div>
+    </header>
+
+    <section class="card" id="statusCard">
+      <div class="row">
+        <span>Bridge</span>
+        <span id="bridgeBadge" class="badge">…</span>
+      </div>
+      <div class="row">
+        <span>Polling</span>
+        <span id="pollBadge" class="badge">…</span>
+      </div>
+      <div class="row">
+        <span>Group</span>
+        <span id="groupBadge" class="badge">…</span>
+      </div>
+      <p id="bridgeUrl" class="mono muted"></p>
+    </section>
+
+    <section class="actions">
+      <button id="btnRefresh" type="button">Refresh</button>
+      <button id="btnReconnect" type="button" class="secondary">Reconnect</button>
+      <button id="btnOptions" type="button" class="secondary">Options</button>
+    </section>
+
+    <pre id="out" class="mono"></pre>
+    <p class="hint">
+      CLI: <code>daily-chrome-tabgroup.sh ping</code>
+    </p>
+    <script src="popup.js"></script>
+  </body>
+</html>
