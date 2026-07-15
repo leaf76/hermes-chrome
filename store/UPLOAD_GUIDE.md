@@ -5,8 +5,9 @@ Package: `store/dist/` (run `./store/package.sh`)
 ## Before upload
 
 1. **Privacy policy** (public):
-   - https://github.com/leaf76/hermes-chrome/blob/main/store/privacy-policy.md
-   - Raw: https://raw.githubusercontent.com/leaf76/hermes-chrome/main/store/privacy-policy.md
+   - GitHub Pages: https://leaf76.github.io/hermes-chrome/privacy-policy
+   - Blob: https://github.com/leaf76/hermes-chrome/blob/main/store/privacy-policy.md
+   - Docs: https://github.com/leaf76/hermes-chrome/blob/main/docs/privacy-policy.md
 
 2. Reload unpacked extension from this repo’s `extension/` and smoke-test:
    ```bash

@@ -8,7 +8,12 @@ HTTP queue between Hermes / agent CLI and the Hermes Chrome extension.
   Extension reports:     POST /v1/result   {id, ok, data|error}
   CLI waits:             GET  /v1/result/<id>?timeout=30
 
-Bind: 127.0.0.1:19876 only (no remote exposure by default).
+Bind: 127.0.0.1 only (default port 19876).
+
+Optional auth:
+  HERMES_CHROME_BRIDGE_TOKEN — if set, require header X-Hermes-Chrome-Token
+  (or ?token=) on /v1/command, /v1/poll, and /v1/result*.
+  /v1/health stays open for liveness probes.
 """
 
 from __future__ import annotations
@@ -22,8 +27,18 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-HOST = os.environ.get("HERMES_TABGROUP_BRIDGE_HOST", "127.0.0.1")
-PORT = int(os.environ.get("HERMES_TABGROUP_BRIDGE_PORT", "19876"))
+HOST = os.environ.get("HERMES_CHROME_BRIDGE_HOST") or os.environ.get(
+    "HERMES_TABGROUP_BRIDGE_HOST", "127.0.0.1"
+)
+PORT = int(
+    os.environ.get("HERMES_CHROME_BRIDGE_PORT")
+    or os.environ.get("HERMES_TABGROUP_BRIDGE_PORT", "19876")
+)
+TOKEN = (
+    os.environ.get("HERMES_CHROME_BRIDGE_TOKEN")
+    or os.environ.get("HERMES_TABGROUP_BRIDGE_TOKEN")
+    or ""
+).strip()
 
 _cmd_q: queue.Queue = queue.Queue()
 _results: dict[str, dict] = {}
@@ -31,22 +46,37 @@ _results_cv = threading.Condition()
 _started_at = time.time()
 
 
-def _json_response(handler: BaseHTTPRequestHandler, code: int, obj: dict | list | None = None) -> None:
+def _json_response(
+    handler: BaseHTTPRequestHandler, code: int, obj: dict | list | None = None
+) -> None:
     body = b"" if obj is None else json.dumps(obj).encode("utf-8")
     handler.send_response(code)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
+    # Local-only companion; CORS open for chrome-extension pages on same machine.
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+    handler.send_header(
+        "Access-Control-Allow-Headers", "Content-Type, X-Hermes-Chrome-Token"
+    )
     handler.end_headers()
     if body:
         handler.wfile.write(body)
 
 
+def _token_ok(handler: BaseHTTPRequestHandler, qs: dict) -> bool:
+    if not TOKEN:
+        return True
+    header = handler.headers.get("X-Hermes-Chrome-Token") or handler.headers.get(
+        "X-Hermes-Token"
+    )
+    qtok = (qs.get("token") or [None])[0]
+    return (header or qtok or "") == TOKEN
+
+
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt: str, *args) -> None:  # quieter
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
         pass
 
     def do_OPTIONS(self) -> None:
@@ -66,8 +96,13 @@ class Handler(BaseHTTPRequestHandler):
                     "service": "hermes-chrome-bridge",
                     "uptime_s": round(time.time() - _started_at, 1),
                     "queued": _cmd_q.qsize(),
+                    "auth": bool(TOKEN),
                 },
             )
+            return
+
+        if not _token_ok(self, qs):
+            _json_response(self, 401, {"ok": False, "error": "unauthorized"})
             return
 
         if path == "/v1/poll":
@@ -94,7 +129,11 @@ class Handler(BaseHTTPRequestHandler):
                     remaining = deadline - time.time()
                     _results_cv.wait(timeout=max(0.05, remaining))
                 if rid not in _results:
-                    _json_response(self, 408, {"ok": False, "error": "timeout waiting for extension result"})
+                    _json_response(
+                        self,
+                        408,
+                        {"ok": False, "error": "timeout waiting for extension result"},
+                    )
                     return
                 payload = _results.pop(rid)
             _json_response(self, 200, payload)
@@ -105,12 +144,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        qs = parse_qs(parsed.query)
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw.decode("utf-8") or "{}")
         except json.JSONDecodeError:
             _json_response(self, 400, {"ok": False, "error": "invalid json"})
+            return
+
+        if not _token_ok(self, qs):
+            _json_response(self, 401, {"ok": False, "error": "unauthorized"})
             return
 
         if path == "/v1/command":
@@ -139,8 +183,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    # Refuse non-loopback binds unless explicitly forced (safety).
+    if HOST not in ("127.0.0.1", "localhost", "::1") and os.environ.get(
+        "HERMES_CHROME_BRIDGE_ALLOW_NONLOCAL"
+    ) != "1":
+        raise SystemExit(
+            f"refusing to bind non-local host {HOST!r}; "
+            "set HERMES_CHROME_BRIDGE_ALLOW_NONLOCAL=1 to override"
+        )
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"hermes-chrome-bridge listening on http://{HOST}:{PORT}", flush=True)
+    auth = "on" if TOKEN else "off"
+    print(
+        f"hermes-chrome-bridge listening on http://{HOST}:{PORT} (auth={auth})",
+        flush=True,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

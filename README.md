@@ -7,7 +7,9 @@ Local companion that makes **Chrome easy for Hermes / local AI agents to operate
 Tab Groups are one isolation tool, not the whole product.
 
 **Privacy policy (Chrome Web Store):**  
-https://github.com/leaf76/hermes-chrome/blob/main/store/privacy-policy.md
+https://leaf76.github.io/hermes-chrome/privacy-policy  
+
+(also in-repo: `docs/privacy-policy.md` / `store/privacy-policy.md`)
 
 ## What it is for
 

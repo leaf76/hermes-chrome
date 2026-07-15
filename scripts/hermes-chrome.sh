@@ -19,7 +19,7 @@
 # Env:
 #   HERMES_CHROME_ROOT   — repo root (default: parent of scripts/)
 #   HERMES_CHROME_BRIDGE_* or HERMES_TABGROUP_BRIDGE_*   — host/port for bridge
-#   HERMES_CHROME_RUN    — runtime dir for pid/log (default ~/.hermes/run/daily-chrome-agent)
+#   HERMES_CHROME_RUN    — runtime dir for pid/log (default ~/.hermes/run/hermes-chrome)
 #
 # Policy: tabs created with active:false to reduce focus steal. Chrome may still
 # briefly raise; we do NOT call AppleScript activate on daily Chrome.
