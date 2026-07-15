@@ -66,14 +66,20 @@ Repo: https://github.com/leaf76/hermes-chrome
 
 ## Graphic assets (upload these)
 
-| Asset | File |
-|-------|------|
-| Store icon 128×128 | `icons/icon128.png` |
-| Screenshot 1 (1280×800) | `screenshots/screenshot-1-workspace-1280x800.png` |
-| Screenshot 2 (1280×800) | `screenshots/screenshot-2-cli-bridge-1280x800.png` |
-| Screenshot 3 (1280×800) | `screenshots/screenshot-3-privacy-local-1280x800.png` |
-| Small promo 440×280 | `screenshots/promo-small-440x280.png` |
-| Marquee 1400×560 (optional) | `screenshots/marquee-1400x560.png` |
+**Important (CWS):** JPEG or **24-bit PNG without alpha**. Files below are RGB-only.
+
+| Asset | File (prefer PNG or JPG) |
+|-------|--------------------------|
+| Store icon 128×128 | `../icons/icon128.png` |
+| Screenshot 1 | `screenshots/screenshot-1-workspace-1280x800.png` |
+| Screenshot 2 | `screenshots/screenshot-2-cli-bridge-1280x800.png` |
+| Screenshot 3 | `screenshots/screenshot-3-privacy-local-1280x800.png` |
+| Screenshot 4 (optional) | `screenshots/screenshot-4-stay-in-flow-1280x800.png` |
+| Screenshot 5 (optional) | `screenshots/screenshot-5-permissions-1280x800.png` |
+| Small promo 440×280 | `screenshots/promo-small-440x280.png` *(or `.jpg`)* |
+| Marquee 1400×560 | `screenshots/marquee-1400x560.png` *(or `.jpg`)* |
+
+Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all five).
 
 ## Privacy & single purpose
 
