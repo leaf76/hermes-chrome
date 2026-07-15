@@ -5,9 +5,9 @@ Package ready at: `store/dist/` (see package step)
 ## Before upload
 
 1. Host **privacy policy** publicly (required if you touch host permissions / tabs):
-   - Upload `store/privacy-policy.md` to a public URL  
-     (GitHub Pages, Notion public page, personal site, etc.)
-   - Example path suggestion: `https://<you>.github.io/hermes-agent-tabgroup/privacy`
+   - Already in this repo: https://github.com/leaf76/hermes-agent-tabgroup/blob/main/store/privacy-policy.md
+   - Or raw: https://raw.githubusercontent.com/leaf76/hermes-agent-tabgroup/main/store/privacy-policy.md
+   - Optional: enable GitHub Pages for a cleaner URL later.
 
 2. Optional: create a support email / homepage for the listing.
 

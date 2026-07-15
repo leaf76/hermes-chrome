@@ -3,6 +3,11 @@
 Chrome extension + local bridge that gives Hermes / local CLIs a **real**
 Chrome Tab Group workspace on the user's everyday Chrome profile.
 
+**Repo:** https://github.com/leaf76/hermes-agent-tabgroup  
+
+**Privacy policy (for Chrome Web Store):**  
+https://github.com/leaf76/hermes-agent-tabgroup/blob/main/store/privacy-policy.md
+
 ## Layout
 
 | Path | Role |
