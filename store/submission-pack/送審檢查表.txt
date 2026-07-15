@@ -1,0 +1,19 @@
+Hermes Chrome v1.0.0 — 送審檢查表（你最後按 Submit）
+
+1) 開啟：https://chrome.google.com/webstore/devconsole
+2) New item → 上傳 zip：
+   store/submission-pack/hermes-chrome-v1.0.0.zip
+3) 貼文案：見 FILL.md（Name / Summary / Description）
+4) Privacy policy URL：
+   https://leaf76.github.io/hermes-chrome/privacy-policy
+5) 上傳圖：
+   - icons/icon128.png
+   - screenshots/screenshot-1-workspace-1280x800.png
+   - screenshots/screenshot-2-cli-bridge-1280x800.png
+   - screenshots/screenshot-3-privacy-local-1280x800.png
+   - screenshots/promo-small-440x280.png（小宣傳圖）
+6) 權限說明：FILL.md → Privacy & single purpose
+7) Visibility：Unlisted 或 Public
+8) 你按：Submit for review
+
+完整英/中文案與 reviewer notes：FILL.md
