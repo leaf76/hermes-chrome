@@ -88,7 +88,7 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 | **Privacy policy URL** | https://leaf76.github.io/hermes-chrome/privacy-policy |
 | **Single purpose** | Provide a local CLI/agent companion that operates Chrome in a dedicated workspace without hijacking the user’s active tab. |
 | **Data usage** | Does not sell or transfer user data to third parties. Does not use remote code. |
-| **Host permission justification** | Localhost only (`127.0.0.1:19876` / `localhost:19876`) to long-poll a user-run companion bridge. No remote hosts. |
+| **Host permission justification** | (1) Localhost `127.0.0.1:19876` / `localhost:19876` — long-poll a user-run companion bridge. (2) `http://*/*` and `https://*/*` — required by Chrome so optional **local tab capture** (`tabs.captureVisibleTab`) works on any normal web page the user/CLI asks the agent to snapshot. Capture is triggered only by local bridge commands; PNGs stay on-device and are not uploaded to our servers. Not limited to any single third-party site. |
 | **tabs** | Create/update/close agent workspace tabs without relying on the user’s active tab when possible. |
 | **tabGroups** | Default workspace isolation via a native Chrome Tab Group. |
 | **storage** | On-device settings only (bridge URL, title/color, polling). |
@@ -106,7 +106,7 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 
 ```
 Hermes Chrome is a local agent companion.
-Host permissions are localhost-only (127.0.0.1:19876).
+Host permissions: localhost bridge + http(s) for optional local tab capture (any site the CLI requests; not site-locked).
 1. Install extension
 2. python3 bridge.py  (listen 127.0.0.1:19876)
 3. Click extension icon

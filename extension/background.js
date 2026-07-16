@@ -229,32 +229,42 @@ async function findTradingViewTab(prefer) {
 }
 
 /**
- * Capture a TradingView (or active) tab as PNG data URL.
- * Activates the tab briefly so captureVisibleTab can see it.
+ * Capture a tab viewport as PNG (any http/https page the user/CLI asks for).
+ * Optional prefer=gc|nq is only a *finder hint* for gold workflows — not a product limit.
  */
 async function captureTab(cmd) {
   const prefer = (cmd.prefer || cmd.product || "auto").toLowerCase();
   let tab = null;
   if (cmd.tabId) {
     tab = await chrome.tabs.get(Number(cmd.tabId));
-  } else if (prefer === "active") {
+  } else if (prefer === "active" || cmd.active) {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
     tab = active;
+  } else if (cmd.urlIncludes) {
+    const tabs = await chrome.tabs.query({});
+    const needle = String(cmd.urlIncludes).toLowerCase();
+    tab = tabs.find((t) => (t.url || "").toLowerCase().includes(needle)) || null;
+    if (!tab) throw new Error(`no tab matching urlIncludes=${cmd.urlIncludes}`);
+  } else if (prefer === "gc" || prefer === "nq" || prefer === "auto") {
+    // Optional title heuristics (e.g. futures symbols) — not site-locked
+    tab = await findTradingViewTab(prefer);
+    if (!tab && prefer === "auto") {
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      tab = active;
+    }
   } else {
     tab = await findTradingViewTab(prefer);
   }
   if (!tab) throw new Error("no matching tab to capture");
 
-  // Make tab visible in its window (required for captureVisibleTab).
   await chrome.tabs.update(tab.id, { active: true });
   if (tab.windowId != null) {
     try {
       await chrome.windows.update(tab.windowId, { focused: false });
     } catch {
-      /* ignore — avoid focus steal when possible */
+      /* avoid focus steal when possible */
     }
   }
-  // small settle for TV canvas
   await new Promise((r) => setTimeout(r, Number(cmd.settleMs) || 400));
 
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
@@ -263,7 +273,6 @@ async function captureTab(cmd) {
   if (!dataUrl || !dataUrl.startsWith("data:image/png")) {
     throw new Error("captureVisibleTab returned empty/non-png");
   }
-  // strip prefix for smaller JSON transfer
   const b64 = dataUrl.replace(/^data:image\/png;base64,/, "");
   const refreshed = await chrome.tabs.get(tab.id);
   return {

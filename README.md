@@ -77,12 +77,16 @@ Override root: `HERMES_CHROME_ROOT=/path/to/this/repo`
 
 See `store/UPLOAD_GUIDE.md`.
 
-## Capture (TradingView / gold)
+## Capture (any page / gold helper)
 
 ```bash
-./scripts/hermes-chrome.sh list-tv
-./scripts/hermes-chrome.sh capture --prefer gc --out /tmp/gc.png
+./scripts/hermes-chrome.sh capture --prefer active --out /tmp/page.png
+./scripts/hermes-chrome.sh capture --prefer gc --out /tmp/gc.png   # title hint only
+./scripts/hermes-chrome.sh list-tv                                  # optional TV tab list
 ```
+
+`capture` is **generic** (any http/https tab via tabId / active / urlIncludes / title hints).  
+Gold’s `prefer=gc|nq` is only a **finder hint**, not a product limit or hard-coded site permission.
 
 Gold pipeline (`~/gold-usd-report`) auto order:
 
@@ -96,7 +100,7 @@ TV_CAPTURE_BACKEND=hermes-chrome ./.venv/bin/python -c \
 # skip in auto: TV_HERMES_CHROME=0
 ```
 
-Requires extension **v1.1.0+** reloaded + icon clicked; GC!/NQ! tabs open.
+Requires extension **v1.2.0+** reloaded + icon clicked.
 
 ## Related (outside this repo)
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Hermes Chrome",
-  "version": "1.1.0",
-  "description": "Make Chrome easy for Hermes and local AI agents to operate—dedicated workspace, tab capture, less focus-stealing, local CLI bridge only.",
+  "version": "1.2.0",
+  "description": "Make Chrome easy for Hermes and local AI agents—workspace, optional tab capture, less focus-stealing, local CLI bridge only.",
   "permissions": [
     "tabs",
     "tabGroups",
@@ -12,8 +12,8 @@
   "host_permissions": [
     "http://127.0.0.1:19876/*",
     "http://localhost:19876/*",
-    "https://*.tradingview.com/*",
-    "https://tradingview.com/*"
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"

@@ -6,7 +6,7 @@
 
 Hermes Chrome is a Chrome extension that helps local AI agents (for example Hermes Agent CLI) operate the browser without hijacking the tab you are using. It is designed to run **entirely on your computer**.
 
-A Chrome Tab Group is the default workspace isolation mechanism; the product purpose is broader agent-friendly Chrome control.
+A Chrome Tab Group is the default workspace isolation mechanism; the product purpose is broader agent-friendly Chrome control (navigate, organize, optional local tab capture).
 
 ## Data we collect
 
@@ -16,7 +16,7 @@ The extension:
 
 - Does **not** include analytics, advertising, crash reporting to third parties, or account systems.
 - Does **not** upload browsing history to a remote service operated by this extension.
-- Only contacts a **user-run local bridge** at `http://127.0.0.1:19876` or `http://localhost:19876` (same host/port family in settings).
+- Only contacts a **user-run local bridge** at `http://127.0.0.1:19876` or `http://localhost:19876` (configurable to the same machine).
 
 ## Local processing
 
@@ -24,7 +24,8 @@ When the local bridge is running:
 
 1. The extension long-polls the local bridge for commands.
 2. Commands may create, update, or close tabs in the agent workspace (default: a Tab Group titled **Hermes**, configurable).
-3. Tab URLs and titles may temporarily appear in the extension popup status on your device.
+3. Optional **tab capture** may snapshot the visible viewport of a tab the user/CLI requests; the PNG is returned only to the local bridge/CLI on your machine.
+4. Tab URLs and titles may temporarily appear in the extension popup status on your device.
 
 If the local bridge is not running, the extension idles and performs no network activity beyond failed local requests.
 
@@ -32,14 +33,16 @@ If the local bridge is not running, the extension idles and performs no network 
 
 | Permission | Why |
 |---|---|
-| `tabs` | Create/update/close agent workspace tabs |
+| `tabs` | Create/update/close agent workspace tabs; select tabs for local capture |
 | `tabGroups` | Default workspace isolation via a native Tab Group |
 | `storage` | Save settings on device |
+| `alarms` | Wake the MV3 service worker so local bridge polling can continue |
 | Host access to `127.0.0.1:19876` / `localhost:19876` | Talk to the local companion bridge only |
+| Host access to `http://*/*` and `https://*/*` | Required by Chrome for `tabs.captureVisibleTab` on normal web pages the agent is asked to operate/capture. **Not** limited to a single website. Capture is only triggered by local CLI/bridge commands; images stay on your machine. |
 
 ## Data retention
 
-Settings are stored in Chrome’s local extension storage on your device. Session workspace IDs are stored in session storage and cleared when the workspace is stopped or the browser session ends.
+Settings are stored in Chrome’s local extension storage on your device. Session workspace IDs are stored in session storage and cleared when the workspace is stopped or the browser session ends. Capture images are not stored by the extension after they are sent to the local bridge.
 
 ## Children
 
