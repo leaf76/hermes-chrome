@@ -38,7 +38,7 @@ If the local bridge is not running, the extension idles and performs no network 
 | `storage` | Save settings on device |
 | `alarms` | Wake the MV3 service worker so local bridge polling can continue |
 | Host access to `127.0.0.1:19876` / `localhost:19876` | Talk to the local companion bridge only |
-| Host access to `http://*/*` and `https://*/*` | Required by Chrome for `tabs.captureVisibleTab` on normal web pages the agent is asked to operate/capture. **Not** limited to a single website. Capture is only triggered by local CLI/bridge commands; images stay on your machine. |
+| Host access (`<all_urls>`) | Required by Chrome for optional `tabs.captureVisibleTab` on normal pages the agent is asked to snapshot. Capture is only triggered by local CLI/bridge commands; images stay on your machine. Not limited to a single website. |
 
 ## Data retention
 
