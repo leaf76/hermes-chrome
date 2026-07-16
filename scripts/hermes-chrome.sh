@@ -172,7 +172,8 @@ cmd_list_tv() {
 }
 
 cmd_capture() {
-  # hermes-chrome.sh capture [--prefer gc|nq|auto] [--out path.png]
+  # hermes-chrome.sh capture [--prefer gc|nq|auto|active] [--out path.png]
+  # Large PNG base64 must NOT go through bash vars / argv — write temp files.
   local prefer="auto"
   local out=""
   while [[ $# -gt 0 ]]; do
@@ -181,29 +182,54 @@ cmd_capture() {
       --out|-o) out="${2:-}"; shift 2 ;;
       gc|nq|auto|active) prefer="$1"; shift ;;
       *.png|*.jpg|*.webp) out="$1"; shift ;;
-      *) die "usage: $0 capture [--prefer gc|nq|auto] [--out path.png]" ;;
+      *) die "usage: $0 capture [--prefer gc|nq|auto|active] [--out path.png]" ;;
     esac
   done
   [[ -n "$out" ]] || out="${RUN_DIR}/capture-${prefer}-$(date +%Y%m%d-%H%M%S).png"
   mkdir -p "$(dirname "$out")"
-  local payload
-  payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":"capture","prefer":sys.argv[1]}))' "$prefer")"
-  local result
-  result="$(send_cmd_json "$payload")"
-  python3 - <<'PY' "$result" "$out"
-import base64, json, sys
+  cmd_bridge_start
+
+  python3 - <<'PY' "$BRIDGE_URL" "$prefer" "$out"
+import base64, json, sys, uuid, urllib.error, urllib.request
 from pathlib import Path
-data = json.loads(sys.argv[1])
-out = Path(sys.argv[2])
+
+bridge, prefer, out = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+cmd_id = str(uuid.uuid4())
+payload = json.dumps({"id": cmd_id, "action": "capture", "prefer": prefer, "settleMs": 400}).encode()
+req = urllib.request.Request(
+    f"{bridge}/v1/command",
+    data=payload,
+    method="POST",
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(req, timeout=15) as r:
+    enq = json.loads(r.read().decode())
+rid = enq.get("id") or cmd_id
+try:
+    with urllib.request.urlopen(f"{bridge}/v1/result/{rid}?timeout=75", timeout=90) as r:
+        body = r.read()
+except urllib.error.HTTPError as e:
+    print("error:", e.read().decode(errors="replace")[:500], file=sys.stderr)
+    sys.exit(1)
+if not body:
+    print("error: empty result from extension", file=sys.stderr)
+    sys.exit(1)
+resp = json.loads(body)
+if not resp.get("ok"):
+    print("error:", resp.get("error") or resp, file=sys.stderr)
+    sys.exit(1)
+data = resp.get("data") or {}
 b64 = data.get("pngBase64") or ""
 if not b64:
     print("error: no pngBase64 in response", file=sys.stderr)
     sys.exit(1)
 raw = base64.b64decode(b64)
+out.parent.mkdir(parents=True, exist_ok=True)
 out.write_bytes(raw)
 meta = {k: data.get(k) for k in ("title", "url", "tabId", "prefer", "bytes") if k in data}
 meta["path"] = str(out.resolve())
 meta["saved_bytes"] = len(raw)
+# do not print base64
 print(json.dumps(meta, indent=2, ensure_ascii=False))
 PY
 }
