@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Hermes Chrome",
-  "version": "1.4.1",
-  "description": "Make Chrome easy for Hermes and local AI agents—workspace, capture, cookie-aware fetch, local URL/file checks, less focus-stealing, local CLI bridge only.",
+  "version": "1.4.2",
+  "description": "Make Chrome easy for Hermes & local AI agents—dedicated workspace, less focus-stealing, local CLI only.",
   "permissions": [
     "tabs",
     "tabGroups",

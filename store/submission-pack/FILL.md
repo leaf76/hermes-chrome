@@ -1,6 +1,6 @@
-# Chrome Web Store — paste pack (Hermes Chrome v1.4.1)
+# Chrome Web Store — paste pack (Hermes Chrome v1.4.2)
 
-Use with zip: `hermes-chrome-v1.4.1.zip`  
+Use with zip: `hermes-chrome-v1.4.2.zip`  
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy  
 Support / homepage: https://github.com/leaf76/hermes-chrome
 
@@ -111,7 +111,7 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 ## Notes for reviewers
 
 ```
-Hermes Chrome is a local agent companion (v1.4.1).
+Hermes Chrome is a local agent companion (v1.4.2).
 Host permissions: localhost bridge + <all_urls> for optional local tab capture only
 (any site the CLI requests; PNG stays on-device; not site-locked).
 No remote code, no analytics, no cloud account.
