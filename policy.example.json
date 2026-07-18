@@ -1,0 +1,7 @@
+{
+  "allow_hosts": [],
+  "deny_hosts": [],
+  "require_https": false,
+  "block_ip_literals": false,
+  "_comment": "Copy to ~/.hermes/run/hermes-chrome/policy.json. Empty allow_hosts = allow all except deny_hosts. Patterns: example.com or *.example.com"
+}

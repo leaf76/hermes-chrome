@@ -15,7 +15,8 @@ Hermes Chrome 是本機 companion：讓 AI agent 在「你的真實 Chrome」上
 • 建立專用 Chrome 分頁群組工作區（預設標題 Hermes，可調）
 • 新分頁預設 active:false，降低搶焦點
 • 只連本機 bridge（127.0.0.1:19876）
-• Popup 顯示 bridge 狀態與工作區分頁
+• 可選本機分頁截圖與輕量 DOM 輔助（PNG 只留在本機）
+• Popup 顯示 bridge 狀態、版本與工作區分頁
 
 **隱私**
 無雲端帳號、無分析追蹤；不會把瀏覽資料送到遠端，只與你本機 bridge 通訊。

@@ -7,6 +7,7 @@ HTTP queue between Hermes / agent CLI and the Hermes Chrome extension.
   CLI enqueues:          POST /v1/command  {id, action, ...}
   Extension reports:     POST /v1/result   {id, ok, data|error}
   CLI waits:             GET  /v1/result/<id>?timeout=30
+  Optional hello:        POST /v1/hello    {version, extension}
 
 Bind: 127.0.0.1 only (default port 19876).
 
@@ -39,11 +40,52 @@ TOKEN = (
     or os.environ.get("HERMES_TABGROUP_BRIDGE_TOKEN")
     or ""
 ).strip()
+# Consider extension connected if it polled within this many seconds.
+_CONNECTED_MAX_AGE_S = float(
+    os.environ.get("HERMES_CHROME_EXTENSION_CONNECTED_S", "45") or 45
+)
 
 _cmd_q: queue.Queue = queue.Queue()
 _results: dict[str, dict] = {}
 _results_cv = threading.Condition()
 _started_at = time.time()
+_last_poll_at: float | None = None
+_extension_version: str | None = None
+_extension_name: str | None = None
+_state_lock = threading.Lock()
+
+
+def _note_extension_seen(
+    *, version: str | None = None, name: str | None = None
+) -> None:
+    global _last_poll_at, _extension_version, _extension_name
+    with _state_lock:
+        _last_poll_at = time.time()
+        if version:
+            _extension_version = str(version)[:32]
+        if name:
+            _extension_name = str(name)[:64]
+
+
+def _health_payload() -> dict:
+    with _state_lock:
+        last = _last_poll_at
+        ver = _extension_version
+        name = _extension_name
+    age = None if last is None else round(time.time() - last, 1)
+    connected = age is not None and age <= _CONNECTED_MAX_AGE_S
+    return {
+        "ok": True,
+        "service": "hermes-chrome-bridge",
+        "uptime_s": round(time.time() - _started_at, 1),
+        "queued": _cmd_q.qsize(),
+        "auth": bool(TOKEN),
+        "extension_last_seen_s": age,
+        "extension_connected": connected,
+        "extension_version": ver,
+        "extension": name,
+        "connected_max_age_s": _CONNECTED_MAX_AGE_S,
+    }
 
 
 def _json_response(
@@ -88,17 +130,7 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         if path in ("/health", "/v1/health"):
-            _json_response(
-                self,
-                200,
-                {
-                    "ok": True,
-                    "service": "hermes-chrome-bridge",
-                    "uptime_s": round(time.time() - _started_at, 1),
-                    "queued": _cmd_q.qsize(),
-                    "auth": bool(TOKEN),
-                },
-            )
+            _json_response(self, 200, _health_payload())
             return
 
         if not _token_ok(self, qs):
@@ -106,6 +138,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/poll":
+            # Any poll (including empty 204) proves the SW is alive.
+            ver = (qs.get("version") or [None])[0]
+            name = (qs.get("extension") or [None])[0]
+            _note_extension_seen(version=ver, name=name or "hermes-chrome")
             timeout = float(qs.get("timeout", ["25"])[0] or 25)
             timeout = max(1.0, min(timeout, 55.0))
             try:
@@ -155,6 +191,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if not _token_ok(self, qs):
             _json_response(self, 401, {"ok": False, "error": "unauthorized"})
+            return
+
+        if path == "/v1/hello":
+            if not isinstance(body, dict):
+                _json_response(self, 400, {"ok": False, "error": "object required"})
+                return
+            _note_extension_seen(
+                version=body.get("version"),
+                name=body.get("extension") or "hermes-chrome",
+            )
+            _json_response(self, 200, {"ok": True, **_health_payload()})
             return
 
         if path == "/v1/command":

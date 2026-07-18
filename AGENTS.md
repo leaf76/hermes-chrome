@@ -17,8 +17,12 @@ product boundary.
 ## Validate
 
 ```bash
-./scripts/hermes-chrome.sh bridge-start
-./scripts/hermes-chrome.sh ping   # needs extension loaded + icon click
+./scripts/hermes-chrome.sh install-launchd   # macOS preferred
+./scripts/hermes-chrome.sh bridge-status     # extension_connected
+./scripts/hermes-chrome.sh ping              # needs extension loaded + icon click; want v1.4.0+
+./scripts/hermes-chrome.sh list-tabs --group
+./scripts/hermes-chrome.sh check-url https://example.com/
+./scripts/hermes-chrome.sh download https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf
 ./store/package.sh
 ```
 

@@ -1,6 +1,6 @@
-# Chrome Web Store — paste pack (Hermes Chrome v1.0.0)
+# Chrome Web Store — paste pack (Hermes Chrome v1.4.1)
 
-Use with zip: `hermes-chrome-v1.0.0.zip`  
+Use with zip: `hermes-chrome-v1.4.1.zip`  
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy  
 Support / homepage: https://github.com/leaf76/hermes-chrome
 
@@ -24,16 +24,19 @@ What it does today
 • Creates a dedicated Chrome Tab Group workspace (default title “Hermes”, configurable)
 • Opens/updates agent tabs with active:false to reduce focus stealing
 • Talks only to a local companion bridge on 127.0.0.1:19876
-• Popup shows bridge online/offline and current agent workspace tabs
+• Optional local tab capture (PNG stays on-device) and light DOM helpers for agent workflows
+• Optional cookie-aware fetch so a local CLI can save a file using your browser session (on-device only)
+• Companion CLI can run local-only URL/file heuristics (no cloud scanner by default)
+• Popup shows bridge online/offline, extension version, and current agent workspace tabs
 
 Who it is for
 Developers using Hermes Agent or other local CLIs that need authenticated browser flows while keeping personal browsing separate from agent work.
 
 How to use
 1. Install this extension
-2. Run the local bridge from the hermes-chrome repo (bridge.py / hermes-chrome.sh)
+2. Run the local bridge from the hermes-chrome repo (bridge.py / hermes-chrome.sh; macOS may use launchd)
 3. Click the extension icon once so polling starts
-4. From your terminal: start / open / new-tab / status / stop
+4. From your terminal: ping / start / open / new-tab / list-tabs / navigate / status / stop / capture
 
 Privacy
 No cloud account. No analytics. The extension does not send browsing data to remote servers—only to a bridge process you run locally.
@@ -55,7 +58,8 @@ Hermes Chrome 是本機 companion：讓 AI agent 在「你的真實 Chrome」上
 • 建立專用 Chrome 分頁群組工作區（預設標題 Hermes，可調）
 • 新分頁預設 active:false，降低搶焦點
 • 只連本機 bridge（127.0.0.1:19876）
-• Popup 顯示 bridge 狀態與工作區分頁
+• 可選本機分頁截圖與輕量 DOM 輔助（PNG 只留在本機）
+• Popup 顯示 bridge 狀態、版本與工作區分頁
 
 隱私：無雲端帳號、無分析追蹤；不會把瀏覽資料送到遠端，只與你本機 bridge 通訊。
 
@@ -70,7 +74,7 @@ Repo: https://github.com/leaf76/hermes-chrome
 
 | Asset | File (prefer PNG or JPG) |
 |-------|--------------------------|
-| Store icon 128×128 | `../icons/icon128.png` |
+| Store icon 128×128 | `icons/icon128.png` |
 | Screenshot 1 | `screenshots/screenshot-1-workspace-1280x800.png` |
 | Screenshot 2 | `screenshots/screenshot-2-cli-bridge-1280x800.png` |
 | Screenshot 3 | `screenshots/screenshot-3-privacy-local-1280x800.png` |
@@ -88,11 +92,13 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 | **Privacy policy URL** | https://leaf76.github.io/hermes-chrome/privacy-policy |
 | **Single purpose** | Provide a local CLI/agent companion that operates Chrome in a dedicated workspace without hijacking the user’s active tab. |
 | **Data usage** | Does not sell or transfer user data to third parties. Does not use remote code. |
+| **Remote code** | **No** (localhost JSON bridge is not remote JS/Wasm). |
 | **Host permission justification** | (1) Localhost `127.0.0.1:19876` / `localhost:19876` — long-poll a user-run companion bridge. (2) `<all_urls>` — required by Chrome for optional `tabs.captureVisibleTab` when the local CLI asks to snapshot a tab (any normal page). Capture is triggered only by local bridge commands; PNG stays on-device. Not limited to any single third-party site. |
 | **tabs** | Create/update/close agent workspace tabs without relying on the user’s active tab when possible. |
 | **tabGroups** | Default workspace isolation via a native Chrome Tab Group. |
 | **storage** | On-device settings only (bridge URL, title/color, polling). |
-| **alarms** | Wake MV3 service worker to continue local bridge polling. |
+| **alarms** | Wake MV3 service worker to continue local bridge polling only; no ads/cloud jobs. |
+| **scripting** | Optional on-device helpers for agent workflows (e.g. read page title / light DOM ops) only when the local bridge issues a command; results stay on-device. |
 
 ## Distribution
 
@@ -105,15 +111,27 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 ## Notes for reviewers
 
 ```
-Hermes Chrome is a local agent companion.
-Host permissions: localhost bridge + http(s) for optional local tab capture (any site the CLI requests; not site-locked).
+Hermes Chrome is a local agent companion (v1.4.1).
+Host permissions: localhost bridge + <all_urls> for optional local tab capture only
+(any site the CLI requests; PNG stays on-device; not site-locked).
+No remote code, no analytics, no cloud account.
 1. Install extension
 2. python3 bridge.py  (listen 127.0.0.1:19876)
 3. Click extension icon
-4. Use CLI: hermes-chrome.sh ping / start / stop
+4. Use CLI: hermes-chrome.sh ping / start / list-tabs / capture / stop
 Repo: https://github.com/leaf76/hermes-chrome
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy
 ```
+
+## Dashboard checklist (paste values)
+
+1. **Remote code** → No  
+2. **Data types collected** → leave all unchecked  
+3. Check the three certification boxes (as shown in dashboard)  
+4. **Privacy policy URL** → https://leaf76.github.io/hermes-chrome/privacy-policy  
+5. **Alarms justification** → Wake MV3 SW to long-poll localhost bridge only  
+6. **Host permissions** → localhost bridge + `<all_urls>` for optional local capture (see above)  
+7. **scripting** → local bridge-command helpers only; on-device  
 
 ## Your last step
 

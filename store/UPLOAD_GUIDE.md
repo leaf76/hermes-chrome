@@ -1,6 +1,9 @@
 # Chrome Web Store upload guide — Hermes Chrome
 
-Package: `store/dist/` (run `./store/package.sh`)
+Package: `store/dist/` (run `./store/package.sh`)  
+**Submission pack (preferred):** `store/submission-pack/` — zip + FILL.md + assets + 送審檢查表.txt
+
+Current version: **1.4.1** → `hermes-chrome-v1.4.1.zip`
 
 ## Before upload
 
@@ -11,33 +14,39 @@ Package: `store/dist/` (run `./store/package.sh`)
 
 2. Reload unpacked extension from this repo’s `extension/` and smoke-test:
    ```bash
-   ./scripts/hermes-chrome.sh bridge-start
-   # click extension icon
+   ./scripts/hermes-chrome.sh bridge-status   # extension_connected + version 1.4.1
+   # click extension icon if needed
    ./scripts/hermes-chrome.sh ping
    ```
+
+3. Prefer paste pack: `store/submission-pack/FILL.md` + `送審檢查表.txt`
 
 ## Developer Dashboard
 
 1. https://chrome.google.com/webstore/devconsole  
-2. **New item** → upload `store/dist/hermes-chrome-v*.zip`  
-3. Listing: `store/listing-en.md` (+ `listing-zh-TW.md` if needed)  
-4. Privacy policy URL → GitHub blob/raw above  
-5. Screenshots: `store/screenshots/` (prefer real UI captures)  
+2. **Update item** (or New item) → upload `store/submission-pack/hermes-chrome-v1.4.1.zip`  
+3. Listing: `FILL.md` / `store/listing-en.md` (+ `listing-zh-TW.md` if needed)  
+4. Privacy policy URL → https://leaf76.github.io/hermes-chrome/privacy-policy  
+5. Screenshots: `store/submission-pack/screenshots/`  
 6. Category: Productivity or Developer Tools  
-7. Submit (or Unlisted first)
+7. Remote code = **No**; data types unchecked; host justification includes localhost + `<all_urls>` for local capture  
+8. Submit (or Unlisted first)
 
 ## Reviewer notes (paste)
 
 ```
-Hermes Chrome is a local agent companion.
-Host permissions are localhost-only (127.0.0.1:19876).
+Hermes Chrome is a local agent companion (v1.4.1).
+Host permissions: localhost bridge + <all_urls> for optional local tab capture
+(any site the CLI requests; PNG stays on-device; not site-locked).
+No remote code, no analytics, no cloud account.
 1. Install extension
-2. python3 bridge.py
+2. python3 bridge.py  (listen 127.0.0.1:19876)
 3. Click extension icon
-4. Use CLI hermes-chrome.sh ping / start / stop
-Tab Groups are the default workspace; product scope is agent Chrome control.
+4. Use CLI: hermes-chrome.sh ping / start / list-tabs / capture / stop
+Repo: https://github.com/leaf76/hermes-chrome
+Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy
 ```
 
 ## Version bumps
 
-Edit `extension/manifest.json` version → `./store/package.sh` → upload new zip.
+Edit `extension/manifest.json` version → `./store/package.sh` → copy zip into `store/submission-pack/` → upload.

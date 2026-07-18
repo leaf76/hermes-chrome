@@ -1,9 +1,12 @@
-Hermes Chrome v1.0.0 — 送審檢查表（你最後按 Submit）
+Hermes Chrome v1.4.1 — 送審檢查表（你最後按 Submit）
+
+路徑（本機）:
+  /Users/cy76/WorkSpace/sideProject/others_projects/hermes-chrome/store/submission-pack/
 
 1) https://chrome.google.com/webstore/devconsole
-2) New item → zip:
-   store/submission-pack/hermes-chrome-v1.0.0.zip
-3) 文案：FILL.md
+2) 既有 item 更新 package 或 New item → zip:
+   hermes-chrome-v1.4.1.zip
+3) 文案：FILL.md（Name / Summary / Detailed description / 權限說明）
 4) Privacy:
    https://leaf76.github.io/hermes-chrome/privacy-policy
 
@@ -22,4 +25,19 @@ Hermes Chrome v1.0.0 — 送審檢查表（你最後按 Submit）
 8) 商店圖示 128：
    icons/icon128.png
 
-9) Visibility → Submit for review
+9) Privacy / compliance 快速填：
+   - Remote code = No
+   - Data types = 全不勾
+   - 三個 certification 勾選
+   - Host: localhost bridge + <all_urls> for optional local capture (PNG on-device)
+   - alarms: wake MV3 SW for localhost poll only
+   - scripting: local bridge-command helpers only
+
+10) Visibility → Submit for review
+
+本機已驗證：
+  v1.3–1.4.x: workspace / capture / list-tabs / navigate / eval
+  v1.4.0+: check-url / download / analyze / fetch_url / page-assets
+  v1.4.1+: --json-only / policy allow-deny / check-tab-links / lastActivity / token-setup
+  bridge launchd: com.leaf76.hermes-chrome-bridge
+  上傳用 zip: hermes-chrome-v1.4.1.zip（勿用舊版）
