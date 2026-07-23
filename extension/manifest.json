@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hermes Chrome",
-  "version": "1.4.2",
+  "version": "1.5.1",
   "description": "Make Chrome easy for Hermes & local AI agents—dedicated workspace, less focus-stealing, local CLI only.",
   "permissions": [
     "tabs",

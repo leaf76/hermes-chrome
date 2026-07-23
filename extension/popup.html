@@ -32,22 +32,29 @@
         <span id="versionBadge" class="badge">…</span>
       </div>
       <div class="row">
+        <span>Auth</span>
+        <span id="authBadge" class="badge">…</span>
+      </div>
+      <div class="row">
         <span>Last</span>
         <span id="lastBadge" class="badge">…</span>
       </div>
       <p id="bridgeUrl" class="mono muted"></p>
       <p id="lastLine" class="mono muted"></p>
+      <p id="authLine" class="mono muted"></p>
     </section>
 
     <section class="actions">
       <button id="btnRefresh" type="button">Refresh</button>
+      <button id="btnPair" type="button" class="secondary">Pair</button>
       <button id="btnReconnect" type="button" class="secondary">Reconnect</button>
       <button id="btnOptions" type="button" class="secondary">Options</button>
     </section>
 
     <pre id="out" class="mono"></pre>
     <p class="hint">
-      CLI: <code>hermes-chrome.sh ping</code>
+      CLI: <code>hermes-chrome.sh ping</code> · if auth fails:
+      <code>pair-open</code> then Pair
     </p>
     <script src="popup.js"></script>
   </body>

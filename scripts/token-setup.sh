@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate / install optional HERMES_CHROME_BRIDGE_TOKEN for local bridge auth.
+# Generate / install HERMES_CHROME_BRIDGE_TOKEN for local bridge auth (default ON).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,23 +24,23 @@ case "$cmd" in
     tok="$(generate_token)"
     umask 077
     cat >"$ENV_FILE" <<EOF
-# Hermes Chrome bridge auth (local only). Loaded by launchd if configured.
+# Hermes Chrome bridge auth (local only). Loaded by CLI and launchd.
 export HERMES_CHROME_BRIDGE_TOKEN='$tok'
 EOF
     chmod 600 "$ENV_FILE"
-    echo "Wrote $ENV_FILE"
-    echo "Token (also in file): $tok"
+    echo "Wrote $ENV_FILE (chmod 600)"
+    echo "Token length: ${#tok}"
     echo
     echo "Next:"
-    echo "  1) export HERMES_CHROME_BRIDGE_TOKEN from bridge.env before CLI, or:"
-    echo "       set -a; source $ENV_FILE; set +a"
-    echo "  2) Restart bridge with the same token:"
-    echo "       set -a; source $ENV_FILE; set +a"
+    echo "  1) Restart bridge so it picks up the token:"
     echo "       $ROOT/scripts/hermes-chrome.sh bridge-restart"
-    echo "       # or: $ROOT/scripts/install-launchd.sh install  (after EnvironmentVariables update)"
-    echo "  3) CLI automatically sends X-Hermes-Chrome-Token when env is set."
+    echo "       # or reinstall launchd: $ROOT/scripts/install-launchd.sh install"
+    echo "  2) Open pairing window and Pair the extension:"
+    echo "       $ROOT/scripts/hermes-chrome.sh pair-open"
+    echo "       # Extension popup → Pair  (or paste token into Options)"
+    echo "  3) CLI auto-sources bridge.env for X-Hermes-Chrome-Token."
     echo
-    echo "Note: launchd plist template does not auto-load bridge.env yet — export in shell or add to plist EnvironmentVariables."
+    echo "Security: never commit bridge.env; never share the token."
     ;;
   show)
     if [[ -f "$ENV_FILE" ]]; then
@@ -58,12 +58,27 @@ EOF
       echo "token_set=false (no $ENV_FILE)"
     fi
     ;;
+  print)
+    # Explicit secret print (for paste into Options). Prefer Pair when possible.
+    if [[ -f "$ENV_FILE" ]]; then
+      # shellcheck disable=SC1090
+      set -a
+      # shellcheck source=/dev/null
+      source "$ENV_FILE"
+      set +a
+    fi
+    if [[ -z "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+      echo "error: no token" >&2
+      exit 1
+    fi
+    echo "$HERMES_CHROME_BRIDGE_TOKEN"
+    ;;
   clear)
     rm -f "$ENV_FILE"
-    echo "removed $ENV_FILE — restart bridge without token"
+    echo "removed $ENV_FILE — restart bridge (will regenerate unless ALLOW_NO_AUTH=1)"
     ;;
   *)
-    echo "usage: $0 generate|show|clear" >&2
+    echo "usage: $0 generate|show|print|clear" >&2
     exit 1
     ;;
 esac

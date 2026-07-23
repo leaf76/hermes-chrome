@@ -31,8 +31,9 @@ https://leaf76.github.io/hermes-chrome/privacy-policy
 7. **Policy** — optional host allow/deny list (`~/.hermes/run/hermes-chrome/policy.json`)
 8. **Agent JSON** — `--json` / `--json-only` (no bridge chatter on stdout)
 9. **Local bridge** — `127.0.0.1:19876` queue + **extension last-seen** on `/v1/health`
-10. **launchd (macOS)** — `install-launchd` for login + KeepAlive bridge; optional bridge token
-11. **Fallback** — named window helper if you cannot load the extension yet
+10. **launchd (macOS)** — `install-launchd` for login + KeepAlive bridge; **token by default**
+11. **Auth + pairing** — shared token (`bridge.env`); extension Pair / Options; CORS locked to extension origins
+12. **Fallback** — named window helper if you cannot load the extension yet
 
 ## Planned / non-goals
 
@@ -57,15 +58,16 @@ Runtime pid/log: `~/.hermes/run/hermes-chrome/` (not in git).
 ## Quick start
 
 ```bash
-./scripts/hermes-chrome.sh install-launchd   # macOS recommended
+./scripts/hermes-chrome.sh install-launchd   # macOS recommended (creates token + KeepAlive)
 # or: ./scripts/hermes-chrome.sh bridge-start
-# Chrome → Load unpacked → ./extension  (or CWS install)
-# Click the extension icon once
-./scripts/hermes-chrome.sh bridge-status     # extension_connected: true
-./scripts/hermes-chrome.sh ping              # version should be 1.4.1+
+# Chrome → Load unpacked → ./extension  (or CWS install) — need v1.5.0+
+# Extension v1.5.1+ auto-pairs when bridge pairing is open (reload is enough).
+# Manual fallback: ./scripts/hermes-chrome.sh pair-open  then popup → Pair
+./scripts/hermes-chrome.sh bridge-status     # auth:true, extension_connected:true
+./scripts/hermes-chrome.sh ping              # waits/retries until extension is up; want 1.5.1+
 ./scripts/hermes-chrome.sh --json ping       # agent-friendly JSON only
 ./scripts/hermes-chrome.sh start 'https://example.com/'
-./scripts/hermes-chrome.sh list-tabs --group
+./scripts/hermes-chrome.sh list-tabs         # workspace only; --all for every tab
 ./scripts/hermes-chrome.sh check-url 'https://example.com/'
 ./scripts/hermes-chrome.sh download 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf'
 ./scripts/hermes-chrome.sh analyze ~/.hermes/run/hermes-chrome/downloads/dummy.pdf
@@ -73,6 +75,26 @@ Runtime pid/log: `~/.hermes/run/hermes-chrome/` (not in git).
 ./scripts/hermes-chrome.sh status
 ./scripts/hermes-chrome.sh stop
 ```
+
+### Security model (read this)
+
+Hermes Chrome is a **local control plane** for your daily browser. Treat the bridge token like a password to your Chrome session.
+
+| Control | Default (v1.5+) |
+|---------|-----------------|
+| Bind | `127.0.0.1` only |
+| Bridge token | **ON** (auto `~/.hermes/run/hermes-chrome/bridge.env`) |
+| Auto-pair | Extension retries pair while disconnected; CLI waits/retries commands |
+| CORS | `chrome-extension://…` only (not `*`) |
+| `list-tabs` | Workspace group only (`--all` for everything) |
+| `eval` / `click` / `type` / `capture` | Workspace tabs only (Options override) |
+| `eval` world | ISOLATED by default (`world: "MAIN"` opt-in) |
+| Private/IP hosts | Blocked for check-url / download / cookie fetch |
+| Queue / body limits | Enforced on bridge |
+
+**Threat model:** you trust this machine’s user + your agent CLI. You do **not** trust random websites or other local processes without the token.
+
+Disable auth only if you accept the risk: `HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH=1`.
 
 ### Safety / download helpers
 
@@ -86,8 +108,10 @@ Runtime pid/log: `~/.hermes/run/hermes-chrome/` (not in git).
 # Downloads land in: ~/.hermes/run/hermes-chrome/downloads/
 # Host policy: copy policy.example.json → ~/.hermes/run/hermes-chrome/policy.json
 ./scripts/hermes-chrome.sh policy-show
-# Optional bridge token:
+# Rotate token:
 ./scripts/hermes-chrome.sh token-setup generate
+./scripts/hermes-chrome.sh bridge-restart
+./scripts/hermes-chrome.sh pair-open   # then extension Pair
 # Override size cap: HERMES_CHROME_DOWNLOAD_MAX_BYTES=10485760
 ```
 
@@ -101,7 +125,7 @@ Hermes wrapper (if present):
 
 Override root: `HERMES_CHROME_ROOT=/path/to/this/repo`
 
-Optional bridge auth: `export HERMES_CHROME_BRIDGE_TOKEN=…` then restart bridge.
+Bridge auth: CLI auto-loads `bridge.env`. Extension uses Pair or Options token field.
 
 ## Agent routing (recommended)
 

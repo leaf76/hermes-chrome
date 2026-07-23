@@ -9,7 +9,7 @@ echo "== Hermes Chrome local setup =="
 echo "repo: $ROOT"
 echo "extension: $EXT"
 
-# Prefer launchd on macOS so bridge survives reboot.
+# Prefer launchd on macOS so bridge survives reboot (also ensures token).
 if [[ "$(uname -s)" == "Darwin" ]]; then
   if bash "$ROOT/scripts/install-launchd.sh" install; then
     echo "launchd: installed com.leaf76.hermes-chrome-bridge"
@@ -23,6 +23,7 @@ else
   "$CLI" bridge-start
 fi
 "$CLI" bridge-status || true
+"$CLI" pair-open || true
 
 # Open extensions page in background (user may still need to Load unpacked once)
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -32,13 +33,15 @@ fi
 
 cat <<EOF
 
-Next (if extension not loaded / not on v1.3.0 yet):
+Next (extension v1.5.0+ required for auth):
   1. Chrome → chrome://extensions → Developer mode ON
-  2. Load unpacked (or Reload CWS build) →:
+  2. Load unpacked (or Reload) →:
        $EXT
-  3. Click the Hermes Chrome icon once (required after Reload)
-  4. Run:  $CLI ping
-           $CLI bridge-status   # extension_connected should be true
+  3. Popup → Pair  (or Options → paste token from ~/.hermes/run/hermes-chrome/bridge.env)
+  4. Click the Hermes Chrome icon once (starts long-poll)
+  5. Run:  $CLI ping
+           $CLI bridge-status   # auth:true + extension_connected:true
 
 Privacy (CWS): https://leaf76.github.io/hermes-chrome/privacy-policy
+Security: bridge token is ON by default; treat bridge.env as a secret.
 EOF

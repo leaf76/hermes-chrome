@@ -1,6 +1,6 @@
 # Privacy Policy — Hermes Chrome
 
-**Last updated:** 2026-07-18
+**Last updated:** 2026-07-24
 
 ## Summary
 
@@ -18,11 +18,19 @@ The extension:
 - Does **not** upload browsing history to a remote service operated by this extension.
 - Only contacts a **user-run local bridge** at `http://127.0.0.1:19876` or `http://localhost:19876` (configurable to the same machine).
 
+## Local security model
+
+- The local bridge requires a **shared token** by default. Commands and polling without the token are rejected.
+- The extension obtains the token via a short **pairing** step (or paste into Options). The token is stored in Chrome local extension storage on your device and in a user-owned file under `~/.hermes/run/hermes-chrome/` for the CLI.
+- Anyone who obtains that token on your machine can instruct the extension to act with your browser privileges. Protect the token like a local password; do not commit or share it.
+- Default command scope is the agent **workspace Tab Group**; listing all tabs or operating outside the workspace requires explicit options/flags.
+- Cookie-aware fetch and downloads block private/loopback hosts by default to reduce local SSRF risk.
+
 ## Local processing
 
 When the local bridge is running:
 
-1. The extension long-polls the local bridge for commands.
+1. The extension long-polls the local bridge for commands (authenticated).
 2. Commands may create, update, or close tabs in the agent workspace (default: a Tab Group titled **Hermes**, configurable).
 3. Optional **tab capture** may snapshot the visible viewport of a tab the user/CLI requests; the PNG is returned only to the local bridge/CLI on your machine.
 4. Optional **fetch** of an http(s) URL using your browser cookies may run only when the local CLI/bridge issues that command; the response body is returned to the local bridge/CLI and may be saved under a local downloads directory on your machine.

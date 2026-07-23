@@ -63,6 +63,12 @@ PY
 }
 
 cmd_install() {
+  # Ensure bridge.env token exists (auth on by default).
+  if [[ ! -f "${RUN_DIR}/bridge.env" ]]; then
+    if [[ -x "${SCRIPT_DIR}/token-setup.sh" || -f "${SCRIPT_DIR}/token-setup.sh" ]]; then
+      bash "${SCRIPT_DIR}/token-setup.sh" generate
+    fi
+  fi
   # Stop manual bridge if listening so launchd owns the port.
   if [[ -x "${SCRIPT_DIR}/hermes-chrome.sh" ]]; then
     "${SCRIPT_DIR}/hermes-chrome.sh" bridge-stop >/dev/null 2>&1 || true

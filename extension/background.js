@@ -17,6 +17,88 @@ const SETTINGS_KEY = "settings";
 const LAST_ACTIVITY_KEY = "lastActivity";
 let polling = false;
 let pollGeneration = 0;
+let lastAuthErrorAt = 0;
+let lastAutoPairAt = 0;
+let autoPairFailStreak = 0;
+const AUTO_PAIR_MIN_INTERVAL_MS = 2500;
+const AUTO_PAIR_MAX_STREAK = 60; // ~2.5 min of attempts then slow down
+
+/** Only http(s) for agent navigation / open (block javascript:/file:/etc). */
+function assertHttpUrl(url, label = "url") {
+  if (!url || typeof url !== "string") {
+    throw new Error(`${label} required`);
+  }
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new Error(`${label} is not a valid URL`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error(`${label} must be http(s); got ${u.protocol}`);
+  }
+  return u.href;
+}
+
+function isPrivateOrLocalHost(hostname) {
+  const h = String(hostname || "")
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  if (!h) return true;
+  if (h === "localhost" || h === "0.0.0.0" || h.endsWith(".localhost")) {
+    return true;
+  }
+  // IPv4
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = m.slice(1).map(Number);
+    if (a.some((n) => n > 255)) return true;
+    const [b0, b1] = a;
+    if (b0 === 10) return true;
+    if (b0 === 127) return true;
+    if (b0 === 0) return true;
+    if (b0 === 169 && b1 === 254) return true;
+    if (b0 === 172 && b1 >= 16 && b1 <= 31) return true;
+    if (b0 === 192 && b1 === 168) return true;
+    if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // CGNAT
+    return false;
+  }
+  // IPv6 compressed forms we care about
+  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) {
+    return true;
+  }
+  return false;
+}
+
+async function authHeaders(extra = {}) {
+  const s = await getSettings();
+  const headers = { ...extra };
+  if (s.bridgeToken) {
+    headers["X-Hermes-Chrome-Token"] = s.bridgeToken;
+  }
+  return headers;
+}
+
+async function assertTabInWorkspace(tabId, cmd = {}) {
+  const settings = await getSettings();
+  const allow =
+    cmd.allowCrossWorkspace === true ||
+    cmd.crossWorkspace === true ||
+    settings.allowCrossWorkspace === true;
+  if (allow) return;
+  const groupId = await getStoredGroupId();
+  if (!(await groupStillExists(groupId))) {
+    throw new Error(
+      "workspace group not running; start workspace first or set allowCrossWorkspace"
+    );
+  }
+  const tab = await chrome.tabs.get(Number(tabId));
+  if (tab.groupId !== groupId) {
+    throw new Error(
+      `tab ${tabId} is outside Hermes workspace (pass allowCrossWorkspace or enable in Options)`
+    );
+  }
+}
 
 async function noteActivity(kind, meta = {}) {
   try {
@@ -46,9 +128,14 @@ async function getSettings() {
   const s = r[SETTINGS_KEY] || {};
   return {
     bridgeUrl: (s.bridgeUrl || DEFAULT_BRIDGE).replace(/\/$/, ""),
+    bridgeToken: typeof s.bridgeToken === "string" ? s.bridgeToken : "",
     groupTitle: s.groupTitle || GROUP_TITLE,
     groupColor: s.groupColor || GROUP_COLOR,
     pollingEnabled: s.pollingEnabled !== false,
+    // Sensitive ops (eval/click/type/capture/fetch) stay in workspace unless opted in.
+    allowCrossWorkspace: s.allowCrossWorkspace === true,
+    // Cookie-aware fetch to private/link-local hosts (default deny).
+    allowPrivateFetch: s.allowPrivateFetch === true,
   };
 }
 
@@ -99,11 +186,12 @@ async function ensureGroup(url) {
   let groupId = await getStoredGroupId();
   if (await groupStillExists(groupId)) {
     if (url) {
+      const safeUrl = assertHttpUrl(url);
       const tabs = await tabsInGroup(groupId);
       if (tabs.length > 0) {
-        await chrome.tabs.update(tabs[0].id, { url, active: false });
+        await chrome.tabs.update(tabs[0].id, { url: safeUrl, active: false });
       } else {
-        const tab = await chrome.tabs.create({ url, active: false });
+        const tab = await chrome.tabs.create({ url: safeUrl, active: false });
         await chrome.tabs.group({ tabIds: [tab.id], groupId });
       }
     }
@@ -111,7 +199,8 @@ async function ensureGroup(url) {
     return { groupId, created: false };
   }
 
-  const startUrl = url || "chrome://newtab/";
+  // New workspace: allow chrome://newtab only when no URL given.
+  const startUrl = url ? assertHttpUrl(url) : "chrome://newtab/";
   const tab = await chrome.tabs.create({ url: startUrl, active: false });
   groupId = await chrome.tabs.group({ tabIds: [tab.id] });
   await styleGroup(groupId);
@@ -120,13 +209,14 @@ async function ensureGroup(url) {
 }
 
 async function openInGroup(url, { newTab = false } = {}) {
+  const safeUrl = assertHttpUrl(url);
   const { groupId } = await ensureGroup(null);
   const tabs = await tabsInGroup(groupId);
   if (!newTab && tabs.length > 0) {
-    await chrome.tabs.update(tabs[0].id, { url, active: false });
+    await chrome.tabs.update(tabs[0].id, { url: safeUrl, active: false });
     return { groupId, tabId: tabs[0].id, mode: "navigate" };
   }
-  const tab = await chrome.tabs.create({ url, active: false });
+  const tab = await chrome.tabs.create({ url: safeUrl, active: false });
   await chrome.tabs.group({ tabIds: [tab.id], groupId });
   return { groupId, tabId: tab.id, mode: "new_tab" };
 }
@@ -136,15 +226,25 @@ async function status() {
   const groupId = await getStoredGroupId();
   const exists = await groupStillExists(groupId);
   let bridgeOk = false;
+  let bridgeAuth = null;
+  let pairingOpen = null;
+  let bridgeHealth = null;
   try {
     const res = await fetch(`${settings.bridgeUrl}/v1/health`, {
       cache: "no-store",
     });
     bridgeOk = res.ok;
+    if (res.ok) {
+      bridgeHealth = await res.json();
+      bridgeAuth = !!bridgeHealth.auth;
+      pairingOpen = !!bridgeHealth.pairing_open;
+    }
   } catch {
     bridgeOk = false;
   }
   const lastActivity = await getLastActivity();
+  const tokenSet = !!(settings.bridgeToken && settings.bridgeToken.length);
+  const authReady = !bridgeAuth || tokenSet;
   if (!exists) {
     return {
       running: false,
@@ -152,10 +252,15 @@ async function status() {
       tabs: [],
       bridgeUrl: settings.bridgeUrl,
       bridgeOk,
+      bridgeAuth,
+      pairingOpen,
+      tokenSet,
+      authReady,
       polling: polling && settings.pollingEnabled,
       extension: "hermes-chrome",
       version: chrome.runtime.getManifest().version,
       lastActivity,
+      allowCrossWorkspace: settings.allowCrossWorkspace,
     };
   }
   const tabs = await tabsInGroup(groupId);
@@ -179,10 +284,15 @@ async function status() {
     })),
     bridgeUrl: settings.bridgeUrl,
     bridgeOk,
+    bridgeAuth,
+    pairingOpen,
+    tokenSet,
+    authReady,
     polling: polling && settings.pollingEnabled,
     extension: "hermes-chrome",
     version: chrome.runtime.getManifest().version,
     lastActivity,
+    allowCrossWorkspace: settings.allowCrossWorkspace,
   };
 }
 
@@ -454,8 +564,19 @@ async function captureTab(cmd) {
   const prefer = (cmd.prefer || cmd.product || "auto").toLowerCase();
   let tab = null;
   if (cmd.tabId) {
+    await assertTabInWorkspace(cmd.tabId, cmd);
     tab = await chrome.tabs.get(Number(cmd.tabId));
   } else if (prefer === "active" || cmd.active) {
+    // Capturing the user's active tab is opt-in (privacy).
+    if (
+      cmd.allowActiveCapture !== true &&
+      cmd.allowCrossWorkspace !== true &&
+      !(await getSettings()).allowCrossWorkspace
+    ) {
+      throw new Error(
+        "capture of active tab requires allowActiveCapture or allowCrossWorkspace"
+      );
+    }
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
     tab = active;
   } else if (cmd.urlIncludes) {
@@ -463,11 +584,31 @@ async function captureTab(cmd) {
     const needle = String(cmd.urlIncludes).toLowerCase();
     tab = tabs.find((t) => (t.url || "").toLowerCase().includes(needle)) || null;
     if (!tab) throw new Error(`no tab matching urlIncludes=${cmd.urlIncludes}`);
+    await assertTabInWorkspace(tab.id, cmd);
   } else if (prefer === "gc" || prefer === "nq" || prefer === "auto") {
     tab = await findTradingViewTab(prefer);
     if (!tab && prefer === "auto") {
-      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-      tab = active;
+      // Prefer workspace tab over user's active tab when possible.
+      const groupId = await getStoredGroupId();
+      if (await groupStillExists(groupId)) {
+        const wt = await tabsInGroup(groupId);
+        tab = wt[0] || null;
+      }
+    }
+    if (tab) {
+      try {
+        await assertTabInWorkspace(tab.id, {
+          ...cmd,
+          // Gold TV tabs may sit outside Hermes group — allow TV finder path.
+          allowCrossWorkspace:
+            cmd.allowCrossWorkspace === true ||
+            prefer === "gc" ||
+            prefer === "nq" ||
+            (await getSettings()).allowCrossWorkspace,
+        });
+      } catch (e) {
+        if (prefer !== "gc" && prefer !== "nq") throw e;
+      }
     }
   } else {
     tab = await findTradingViewTab(prefer);
@@ -573,7 +714,12 @@ async function listTvTabs() {
 
 /** Generic tab list for agents (not TV-only). */
 async function listTabs(cmd = {}) {
-  const groupOnly = Boolean(cmd.groupOnly || cmd.workspaceOnly);
+  // Default: workspace only. Pass allTabs:true or groupOnly:false for every tab.
+  const effectiveGroupOnly = !(
+    cmd.allTabs === true ||
+    cmd.groupOnly === false ||
+    cmd.workspaceOnly === false
+  );
   const urlIncludes = cmd.urlIncludes
     ? String(cmd.urlIncludes).toLowerCase()
     : null;
@@ -583,9 +729,9 @@ async function listTabs(cmd = {}) {
   const limit = Math.max(1, Math.min(Number(cmd.limit) || 200, 500));
 
   let groupId = await getStoredGroupId();
-  if (groupOnly) {
+  if (effectiveGroupOnly) {
     if (!(await groupStillExists(groupId))) {
-      return { tabs: [], groupId: null, count: 0 };
+      return { tabs: [], groupId: null, count: 0, groupOnly: true };
     }
   } else if (!(await groupStillExists(groupId))) {
     groupId = null;
@@ -594,7 +740,7 @@ async function listTabs(cmd = {}) {
   const tabs = await chrome.tabs.query({});
   const out = [];
   for (const t of tabs) {
-    if (groupOnly && t.groupId !== groupId) continue;
+    if (effectiveGroupOnly && t.groupId !== groupId) continue;
     const url = t.url || "";
     const title = t.title || "";
     if (urlIncludes && !url.toLowerCase().includes(urlIncludes)) continue;
@@ -617,7 +763,7 @@ async function listTabs(cmd = {}) {
     count: out.length,
     groupId,
     filters: {
-      groupOnly,
+      groupOnly: effectiveGroupOnly,
       urlIncludes: urlIncludes || null,
       titleIncludes: titleIncludes || null,
       limit,
@@ -630,12 +776,12 @@ async function listTabs(cmd = {}) {
  * Resolves tab by tabId, else workspace first tab, else create in group.
  */
 async function navigateTab(cmd) {
-  const url = cmd.url;
-  if (!url) throw new Error("url required");
+  const url = assertHttpUrl(cmd.url);
   const activate = cmd.active === true;
   let tabId = cmd.tabId != null ? Number(cmd.tabId) : null;
 
   if (tabId != null && Number.isFinite(tabId)) {
+    await assertTabInWorkspace(tabId, cmd);
     const updated = await chrome.tabs.update(tabId, {
       url,
       active: activate,
@@ -713,15 +859,20 @@ function jsonSafe(value, depth = 0) {
 async function evalInTab(cmd) {
   const tabId = Number(cmd.tabId);
   if (!Number.isFinite(tabId)) throw new Error("tabId required");
+  await assertTabInWorkspace(tabId, cmd);
   const expression = cmd.expression || cmd.code;
   if (!expression || typeof expression !== "string") {
     throw new Error("expression required");
   }
   if (expression.length > 8000) throw new Error("expression too long (max 8000)");
 
+  // Default ISOLATED world; MAIN only when explicitly requested (page JS access).
+  const world =
+    cmd.world === "MAIN" || cmd.mainWorld === true ? "MAIN" : "ISOLATED";
+
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
-    world: "MAIN",
+    world,
     args: [expression],
     func: (expr) => {
       try {
@@ -740,6 +891,7 @@ async function evalInTab(cmd) {
   }
   return {
     tabId,
+    world,
     value: jsonSafe(result.value),
   };
 }
@@ -748,6 +900,7 @@ async function evalInTab(cmd) {
 async function clickInTab(cmd) {
   const tabId = Number(cmd.tabId);
   if (!Number.isFinite(tabId)) throw new Error("tabId required");
+  await assertTabInWorkspace(tabId, cmd);
   const selector = cmd.selector;
   if (!selector || typeof selector !== "string") {
     throw new Error("selector required");
@@ -778,10 +931,31 @@ async function clickInTab(cmd) {
  * Returns base64 body + response meta. Size-capped for bridge safety.
  */
 async function fetchUrl(cmd) {
-  const url = cmd.url;
-  if (!url || typeof url !== "string") throw new Error("url required");
-  if (!/^https?:\/\//i.test(url)) {
-    throw new Error("only http(s) URLs allowed for fetch_url");
+  const url = assertHttpUrl(cmd.url);
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("invalid url");
+  }
+  const settings = await getSettings();
+  const allowPrivate =
+    cmd.allowPrivate === true || settings.allowPrivateFetch === true;
+  if (!allowPrivate && isPrivateOrLocalHost(parsed.hostname)) {
+    throw new Error(
+      `refusing private/local host for fetch_url: ${parsed.hostname} (enable allowPrivateFetch in Options or pass allowPrivate)`
+    );
+  }
+  // Block obvious cloud metadata hosts even if DNS later rebinds.
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === "metadata.google.internal" ||
+    host === "metadata" ||
+    host.endsWith(".internal")
+  ) {
+    if (!allowPrivate) {
+      throw new Error(`refusing metadata/internal host: ${host}`);
+    }
   }
   const maxBytes = Math.max(
     1024,
@@ -797,6 +971,17 @@ async function fetchUrl(cmd) {
       cache: "no-store",
       signal: ctrl.signal,
     });
+    // After redirects, re-check final host.
+    try {
+      const finalHost = new URL(res.url || url).hostname;
+      if (!allowPrivate && isPrivateOrLocalHost(finalHost)) {
+        throw new Error(
+          `refusing redirect to private/local host: ${finalHost}`
+        );
+      }
+    } catch (e) {
+      if (String(e.message || e).includes("refusing")) throw e;
+    }
     const cl = res.headers.get("content-length");
     if (cl && Number(cl) > maxBytes) {
       throw new Error(
@@ -846,6 +1031,7 @@ async function fetchUrl(cmd) {
 async function listPageAssets(cmd) {
   const tabId = Number(cmd.tabId);
   if (!Number.isFinite(tabId)) throw new Error("tabId required");
+  await assertTabInWorkspace(tabId, cmd);
   const limit = Math.max(1, Math.min(Number(cmd.limit) || 200, 500));
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
@@ -895,6 +1081,7 @@ async function listPageAssets(cmd) {
 async function typeInTab(cmd) {
   const tabId = Number(cmd.tabId);
   if (!Number.isFinite(tabId)) throw new Error("tabId required");
+  await assertTabInWorkspace(tabId, cmd);
   const selector = cmd.selector;
   const text = cmd.text != null ? String(cmd.text) : "";
   if (!selector || typeof selector !== "string") {
@@ -985,9 +1172,10 @@ async function handleCommand(cmd) {
 
 async function postResult(bridge, id, payload) {
   try {
+    const headers = await authHeaders({ "Content-Type": "application/json" });
     await fetch(`${bridge}/v1/result`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ id, ...payload }),
     });
   } catch (e) {
@@ -1004,9 +1192,10 @@ function extensionIdentityQuery() {
 
 async function postHello(bridge) {
   try {
+    const headers = await authHeaders({ "Content-Type": "application/json" });
     await fetch(`${bridge}/v1/hello`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         extension: "hermes-chrome",
         version: chrome.runtime.getManifest().version,
@@ -1018,17 +1207,112 @@ async function postHello(bridge) {
   }
 }
 
+async function pairWithBridge() {
+  const settings = await getSettings();
+  const bridge = settings.bridgeUrl || DEFAULT_BRIDGE;
+  const res = await fetch(`${bridge}/v1/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+    cache: "no-store",
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.ok || !body.token) {
+    throw new Error(body.error || `pair failed HTTP ${res.status}`);
+  }
+  const next = {
+    ...settings,
+    bridgeToken: String(body.token),
+    bridgeUrl: (body.bridge || bridge).replace(/\/$/, ""),
+  };
+  await chrome.storage.local.set({ [SETTINGS_KEY]: next });
+  autoPairFailStreak = 0;
+  lastAuthErrorAt = 0;
+  startPolling();
+  return {
+    ok: true,
+    tokenSet: true,
+    bridgeUrl: next.bridgeUrl,
+    hint: "Token saved. Polling restarted.",
+    auto: !!body.auto,
+  };
+}
+
+/**
+ * Auto-pair when token is missing (reload / first install).
+ * Bridge keeps pairing_open while extension is disconnected.
+ */
+async function tryAutoPair(reason = "poll") {
+  const settings = await getSettings();
+  if (settings.bridgeToken) return true;
+  if (!settings.pollingEnabled) return false;
+
+  const now = Date.now();
+  // Back off after many failures (still retry slowly).
+  const minInterval =
+    autoPairFailStreak >= AUTO_PAIR_MAX_STREAK
+      ? 15000
+      : AUTO_PAIR_MIN_INTERVAL_MS;
+  if (now - lastAutoPairAt < minInterval) return false;
+  lastAutoPairAt = now;
+
+  const bridge = settings.bridgeUrl || DEFAULT_BRIDGE;
+  try {
+    // Touch health so bridge can auto-reopen pairing when disconnected.
+    const hr = await fetch(`${bridge}/v1/health`, { cache: "no-store" });
+    if (hr.ok) {
+      const health = await hr.json().catch(() => ({}));
+      if (health.auth === false) {
+        // No token required on bridge.
+        return true;
+      }
+      if (health.pairing_open === false) {
+        autoPairFailStreak += 1;
+        return false;
+      }
+    }
+    await pairWithBridge();
+    await noteActivity("auto_pair", { reason });
+    return true;
+  } catch {
+    autoPairFailStreak += 1;
+    return false;
+  }
+}
+
 async function pollOnce(bridge) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 28000);
   try {
+    // Ensure we have a token before long-poll when possible.
+    const settings = await getSettings();
+    if (!settings.bridgeToken) {
+      await tryAutoPair("before_poll");
+    }
+    const headers = await authHeaders();
     const res = await fetch(
       `${bridge}/v1/poll?timeout=25&${extensionIdentityQuery()}`,
       {
         signal: ctrl.signal,
         cache: "no-store",
+        headers,
       }
     );
+    if (res.status === 401) {
+      lastAuthErrorAt = Date.now();
+      // Stale/wrong token or never paired — clear empty isn't enough; try pair.
+      const s = await getSettings();
+      if (!s.bridgeToken) {
+        await tryAutoPair("401");
+      } else {
+        // Token rejected: clear and re-pair (bridge rotated token).
+        await chrome.storage.local.set({
+          [SETTINGS_KEY]: { ...s, bridgeToken: "" },
+        });
+        await tryAutoPair("401_stale");
+      }
+      return;
+    }
     if (res.status === 204 || res.status === 404 || !res.ok) return;
     const cmd = await res.json();
     if (!cmd || !cmd.id) return;
@@ -1055,6 +1339,14 @@ async function pollLoop(generation) {
       await new Promise((r) => setTimeout(r, 1000));
       continue;
     }
+    if (!settings.bridgeToken) {
+      const ok = await tryAutoPair("loop");
+      if (!ok) {
+        // Wait a bit before next auto-pair attempt (avoid tight loop).
+        await new Promise((r) => setTimeout(r, AUTO_PAIR_MIN_INTERVAL_MS));
+        continue;
+      }
+    }
     await pollOnce(settings.bridgeUrl);
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -1064,8 +1356,17 @@ function startPolling() {
   pollGeneration += 1;
   const generation = pollGeneration;
   polling = true;
-  // Best-effort identity push so /v1/health shows extension_connected soon.
-  getBridgeBase().then((b) => postHello(b)).catch(() => {});
+  autoPairFailStreak = 0;
+  // Immediate auto-pair + hello so reload does not need a manual Pair click.
+  (async () => {
+    try {
+      await tryAutoPair("start");
+      const b = await getBridgeBase();
+      await postHello(b);
+    } catch {
+      /* bridge down */
+    }
+  })();
   pollLoop(generation);
   // Keep service worker eligible for wake-ups (MV3).
   try {
@@ -1098,7 +1399,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "status") {
-    status().then(sendResponse);
+    status().then((s) => {
+      s.authErrorRecent =
+        lastAuthErrorAt > 0 && Date.now() - lastAuthErrorAt < 60000;
+      sendResponse(s);
+    });
     return true;
   }
   if (msg?.type === "reconnect") {
@@ -1106,17 +1411,52 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (msg?.type === "pair") {
+    pairWithBridge()
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+    return true;
+  }
   if (msg?.type === "getSettings") {
-    getSettings().then(sendResponse);
+    getSettings().then((s) => {
+      // Never echo full token to popup JSON dumps — mask for UI.
+      sendResponse({
+        ...s,
+        bridgeToken: s.bridgeToken || "",
+        tokenSet: !!(s.bridgeToken && s.bridgeToken.length),
+      });
+    });
     return true;
   }
   if (msg?.type === "setSettings") {
-    chrome.storage.local
-      .set({ [SETTINGS_KEY]: msg.settings || {} })
-      .then(() => {
+    const incoming = msg.settings || {};
+    getSettings().then((cur) => {
+      const merged = {
+        bridgeUrl: incoming.bridgeUrl ?? cur.bridgeUrl,
+        bridgeToken:
+          incoming.bridgeToken !== undefined
+            ? String(incoming.bridgeToken || "")
+            : cur.bridgeToken,
+        groupTitle: incoming.groupTitle ?? cur.groupTitle,
+        groupColor: incoming.groupColor ?? cur.groupColor,
+        pollingEnabled:
+          incoming.pollingEnabled !== undefined
+            ? !!incoming.pollingEnabled
+            : cur.pollingEnabled,
+        allowCrossWorkspace:
+          incoming.allowCrossWorkspace !== undefined
+            ? !!incoming.allowCrossWorkspace
+            : cur.allowCrossWorkspace,
+        allowPrivateFetch:
+          incoming.allowPrivateFetch !== undefined
+            ? !!incoming.allowPrivateFetch
+            : cur.allowPrivateFetch,
+      };
+      return chrome.storage.local.set({ [SETTINGS_KEY]: merged }).then(() => {
         startPolling();
-        sendResponse({ ok: true });
+        sendResponse({ ok: true, tokenSet: !!merged.bridgeToken });
       });
+    });
     return true;
   }
   return false;

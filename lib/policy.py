@@ -10,20 +10,32 @@ Example:
   "allow_hosts": ["example.com", "*.github.com"],
   "deny_hosts": ["malware.example"],
   "require_https": false,
-  "block_ip_literals": false
+  "block_ip_literals": true,
+  "block_private_hosts": true
 }
 
 Empty allow_hosts = allow all (except deny_hosts).
+Defaults when no policy file: block private hosts + IP literals (fail-closed).
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+# Safer defaults when no policy.json is present.
+_DEFAULT_POLICY: dict[str, Any] = {
+    "allow_hosts": [],
+    "deny_hosts": [],
+    "require_https": False,
+    "block_ip_literals": True,
+    "block_private_hosts": True,
+}
 
 
 def policy_paths() -> list[Path]:
@@ -44,17 +56,12 @@ def load_policy() -> dict[str, Any]:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    data["_path"] = str(p)
-                    return data
+                    merged = {**_DEFAULT_POLICY, **data}
+                    merged["_path"] = str(p)
+                    return merged
             except (OSError, json.JSONDecodeError):
                 continue
-    return {
-        "allow_hosts": [],
-        "deny_hosts": [],
-        "require_https": False,
-        "block_ip_literals": False,
-        "_path": None,
-    }
+    return {**_DEFAULT_POLICY, "_path": None}
 
 
 def _host_match(host: str, pattern: str) -> bool:
@@ -66,6 +73,36 @@ def _host_match(host: str, pattern: str) -> bool:
         suffix = pattern[1:]  # .example.com
         return host.endswith(suffix) or host == pattern[2:]
     return host == pattern
+
+
+def _host_is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address((host or "").strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def _host_is_private(host: str) -> bool:
+    h = (host or "").lower().strip("[]")
+    if not h:
+        return False
+    if h in {"localhost", "0.0.0.0", "::1"} or h.endswith(".localhost"):
+        return True
+    if h in {"metadata.google.internal", "metadata"} or h.endswith(".internal"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        return bool(
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        )
+    except ValueError:
+        return False
 
 
 def check_host_policy(url: str, policy: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -81,6 +118,25 @@ def check_host_policy(url: str, policy: dict[str, Any] | None = None) -> dict[st
                 "level": "block",
                 "code": "policy_require_https",
                 "message": "policy requires https",
+            }
+        )
+
+    # Fail-closed defaults: private / link-local / metadata hosts
+    if host and policy.get("block_private_hosts", True) and _host_is_private(host):
+        findings.append(
+            {
+                "level": "block",
+                "code": "policy_block_private_host",
+                "message": f"private/loopback/metadata host blocked by policy: {host}",
+            }
+        )
+
+    if host and policy.get("block_ip_literals", True) and _host_is_ip(host):
+        findings.append(
+            {
+                "level": "block",
+                "code": "policy_block_ip_literal",
+                "message": f"IP-literal host blocked by policy: {host}",
             }
         )
 

@@ -7,13 +7,24 @@
       body {
         font: 13px/1.45 system-ui, -apple-system, sans-serif;
         margin: 16px;
-        max-width: 420px;
+        max-width: 440px;
         color: #0f172a;
       }
       label {
         display: block;
         font-weight: 600;
         margin: 12px 0 4px;
+      }
+      label.inline {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        font-weight: 500;
+        margin: 10px 0;
+      }
+      label.inline input {
+        width: auto;
+        margin-top: 2px;
       }
       input,
       select {
@@ -27,6 +38,7 @@
         display: flex;
         gap: 8px;
         margin-top: 16px;
+        flex-wrap: wrap;
       }
       button {
         border: 0;
@@ -49,6 +61,15 @@
         margin-top: 10px;
         font-size: 12px;
       }
+      .warn {
+        background: #fff7ed;
+        border: 1px solid #fed7aa;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 12px;
+        color: #9a3412;
+        margin: 10px 0;
+      }
     </style>
   </head>
   <body>
@@ -58,6 +79,11 @@
       tab. Talks only to a bridge on this machine (default port 19876). No cloud
       account. No analytics.
     </p>
+    <div class="warn">
+      The bridge requires a shared token by default. Use <strong>Pair with
+      bridge</strong> within a few minutes of bridge start, or paste the token
+      from <code>~/.hermes/run/hermes-chrome/bridge.env</code>.
+    </div>
 
     <label for="bridgeUrl">Local bridge URL</label>
     <input id="bridgeUrl" type="url" placeholder="http://127.0.0.1:19876" />
@@ -65,6 +91,16 @@
       Must match host_permissions (127.0.0.1 / localhost port 19876 for the
       published build).
     </p>
+
+    <label for="bridgeToken">Bridge token</label>
+    <input
+      id="bridgeToken"
+      type="password"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="Paste token or use Pair"
+    />
+    <p class="hint" id="tokenHint">Not set</p>
 
     <label for="groupTitle">Tab group title</label>
     <input id="groupTitle" type="text" maxlength="50" />
@@ -82,12 +118,26 @@
       <option value="yellow">yellow</option>
     </select>
 
-    <label>
+    <label class="inline">
       <input id="pollingEnabled" type="checkbox" checked />
-      Enable bridge polling
+      <span>Enable bridge polling</span>
+    </label>
+    <label class="inline">
+      <input id="allowCrossWorkspace" type="checkbox" />
+      <span
+        >Allow ops on tabs outside the Hermes workspace (eval / click / capture /
+        list-all)</span
+      >
+    </label>
+    <label class="inline">
+      <input id="allowPrivateFetch" type="checkbox" />
+      <span
+        >Allow cookie-aware fetch to private/localhost hosts (SSRF risk)</span
+      >
     </label>
 
     <div class="row">
+      <button id="pair" type="button">Pair with bridge</button>
       <button id="save" type="button">Save</button>
       <button id="reset" type="button" class="secondary">Reset defaults</button>
     </div>

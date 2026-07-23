@@ -12,7 +12,7 @@
 #   hermes-chrome.sh open <url>
 #   hermes-chrome.sh new-tab <url>
 #   hermes-chrome.sh navigate <url> [--tab-id N]
-#   hermes-chrome.sh list-tabs [--group] [--url needle] [--title needle]
+#   hermes-chrome.sh list-tabs [--all] [--url needle] [--title needle]
 #   hermes-chrome.sh eval --tab-id N --expr 'document.title'
 #   hermes-chrome.sh click --tab-id N --selector 'css'
 #   hermes-chrome.sh type --tab-id N --selector 'css' --text '...'
@@ -22,7 +22,7 @@
 #   hermes-chrome.sh analyze <path> [path...]
 #   hermes-chrome.sh page-assets --tab-id N
 #   hermes-chrome.sh check-tab-links --tab-id N
-#   hermes-chrome.sh policy-show | token-setup
+#   hermes-chrome.sh policy-show | token-setup | pair-open | show-token
 #   hermes-chrome.sh bridge-start|bridge-stop|bridge-status|bridge-restart
 #   hermes-chrome.sh install-launchd|uninstall-launchd|install-help
 #
@@ -34,7 +34,8 @@
 #   HERMES_CHROME_ROOT   — repo root (default: parent of scripts/)
 #   HERMES_CHROME_BRIDGE_* or HERMES_TABGROUP_BRIDGE_*   — host/port for bridge
 #   HERMES_CHROME_RUN    — runtime dir for pid/log (default ~/.hermes/run/hermes-chrome)
-#   HERMES_CHROME_BRIDGE_TOKEN — optional shared token
+#   HERMES_CHROME_BRIDGE_TOKEN — shared token (auto-loaded from bridge.env)
+#   HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH=1 — insecure: disable bridge token
 #   HERMES_CHROME_DOWNLOAD_MAX_BYTES — default 50MiB
 #   HERMES_CHROME_JSON=1 — same as --json-only
 #   HERMES_CHROME_POLICY — path to policy.json (allow/deny hosts)
@@ -57,15 +58,90 @@ EXT_DIR="${ROOT}/extension"
 JSON_ONLY="${HERMES_CHROME_JSON:-0}"
 QUIET=0
 [[ "$JSON_ONLY" == "1" || "$JSON_ONLY" == "true" ]] && QUIET=1
+ENV_FILE="${RUN_DIR}/bridge.env"
 
 mkdir -p "$RUN_DIR"
+
+# Load shared bridge token when present (CLI + child python inherit).
+if [[ -z "${HERMES_CHROME_BRIDGE_TOKEN:-}" && -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  set +a
+fi
 
 die() { echo "error: $*" >&2; exit 1; }
 log() { [[ "${QUIET}" == "1" || "${JSON_ONLY}" == "1" ]] || echo "$@"; }
 is_json() { [[ "${JSON_ONLY}" == "1" || "${JSON_ONLY}" == "true" ]]; }
 
+# Wait / retry tuning (override via env)
+WAIT_TRIES="${HERMES_CHROME_WAIT_TRIES:-45}"          # ~45s default
+WAIT_SLEEP_S="${HERMES_CHROME_WAIT_SLEEP:-1}"
+CMD_RETRIES="${HERMES_CHROME_CMD_RETRIES:-3}"
+
 bridge_healthy() {
   curl -fsS --max-time 1 "${BRIDGE_URL}/v1/health" >/dev/null 2>&1
+}
+
+bridge_health_json() {
+  curl -fsS --max-time 2 "${BRIDGE_URL}/v1/health" 2>/dev/null || echo '{}'
+}
+
+extension_connected() {
+  python3 - <<'PY' "$(bridge_health_json)"
+import json, sys
+try:
+    h = json.loads(sys.argv[1] or "{}")
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if h.get("extension_connected") else 1)
+PY
+}
+
+# Ensure token env is loaded (bridge may have just written bridge.env).
+reload_bridge_token() {
+  if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+  fi
+}
+
+open_pairing_quiet() {
+  reload_bridge_token
+  local -a hdrs=(-H 'Content-Type: application/json')
+  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+    hdrs+=(-H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}")
+  fi
+  curl -fsS --max-time 3 "${hdrs[@]}" -d '{}' "${BRIDGE_URL}/v1/pair-open" >/dev/null 2>&1 || true
+}
+
+# Wait for extension poll (auto-pair on extension side). Re-opens pairing only while disconnected.
+wait_for_extension() {
+  local tries="${1:-$WAIT_TRIES}"
+  local i health
+  reload_bridge_token
+  if extension_connected; then
+    return 0
+  fi
+  open_pairing_quiet
+  for i in $(seq 1 "$tries"); do
+    if extension_connected; then
+      return 0
+    fi
+    # Periodically nudge pairing open + reload token (bridge auto-gen path).
+    if (( i % 5 == 0 )); then
+      open_pairing_quiet
+      reload_bridge_token
+    fi
+    sleep "$WAIT_SLEEP_S"
+  done
+  health="$(bridge_health_json)"
+  log "wait_for_extension: timed out after ${tries}s — health=${health}"
+  return 1
 }
 
 cmd_bridge_status() {
@@ -90,7 +166,8 @@ print(
 )
 if conn is False:
     print(
-        "hint: Reload Hermes Chrome + click icon if last_seen is null/stale",
+        "hint: extension not connected — Reload extension; it should auto-pair. "
+        "Or: hermes-chrome.sh pair-open + popup Pair",
         file=sys.stderr,
     )
 PY
@@ -114,12 +191,34 @@ cmd_bridge_start() {
     return 0
   fi
   [[ -f "$BRIDGE_PY" ]] || die "missing $BRIDGE_PY"
+  # Ensure token env is visible to the bridge process (auto-generate if missing).
+  if [[ -z "${HERMES_CHROME_BRIDGE_TOKEN:-}" && -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+  fi
   # Launch detached without shell nohup wrapper restrictions when possible.
-  python3 "$BRIDGE_PY" >>"$LOG_FILE" 2>&1 &
+  env \
+    HERMES_CHROME_RUN="${RUN_DIR}" \
+    HERMES_CHROME_BRIDGE_HOST="${BRIDGE_HOST}" \
+    HERMES_CHROME_BRIDGE_PORT="${BRIDGE_PORT}" \
+    ${HERMES_CHROME_BRIDGE_TOKEN:+HERMES_CHROME_BRIDGE_TOKEN="${HERMES_CHROME_BRIDGE_TOKEN}"} \
+    ${HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH:+HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH="${HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH}"} \
+    python3 "$BRIDGE_PY" >>"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
   local i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 40); do
     if bridge_healthy; then
+      # Reload token if bridge just generated bridge.env
+      if [[ -z "${HERMES_CHROME_BRIDGE_TOKEN:-}" && -f "$ENV_FILE" ]]; then
+        # shellcheck disable=SC1090
+        set -a
+        # shellcheck source=/dev/null
+        source "$ENV_FILE"
+        set +a
+      fi
       log "bridge started: ${BRIDGE_URL}"
       return 0
     fi
@@ -152,7 +251,7 @@ cmd_bridge_restart() {
   cmd_bridge_start
 }
 
-# POST command and wait for extension result.
+# POST command and wait for extension result (with wait + retries).
 # Usage: send_cmd <action> [url]
 #        send_cmd_json '{"action":"capture","prefer":"gc"}'
 send_cmd_json() {
@@ -162,22 +261,54 @@ send_cmd_json() {
   QUIET=1
   cmd_bridge_start
   QUIET="$_prev_quiet"
-  local resp id result
+  reload_bridge_token
+
+  if ! wait_for_extension "$WAIT_TRIES"; then
+    die "extension not connected after ${WAIT_TRIES}s.
+  1) Chrome → Reload Hermes Chrome (unpacked: ${EXT_DIR})
+  2) Wait a few seconds (auto-pair) or click Pair in popup
+  3) Retry: $0 ping
+Bridge: ${BRIDGE_URL}"
+  fi
+
+  local attempt resp id result curl_err
   local -a curl_hdrs=(-H 'Content-Type: application/json')
   if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
     curl_hdrs+=(-H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}")
   fi
-  resp="$(curl -fsS --max-time 10 "${curl_hdrs[@]}" -d "$payload" "${BRIDGE_URL}/v1/command")"
-  id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$resp")"
-  # capture payloads can be large — longer wait
-  if ! result="$(curl -fsS --max-time 90 "${curl_hdrs[@]}" "${BRIDGE_URL}/v1/result/${id}?timeout=75")"; then
-    die "no response from extension (timeout). Load unpacked + click icon.
-  ${EXT_DIR}
-Bridge: ${BRIDGE_URL}"
-  fi
-  local indent_flag="2"
-  is_json && indent_flag="None"
-  python3 - <<'PY' "$result" "$indent_flag"
+
+  for attempt in $(seq 1 "$CMD_RETRIES"); do
+    reload_bridge_token
+    curl_hdrs=(-H 'Content-Type: application/json')
+    if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+      curl_hdrs+=(-H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}")
+    fi
+    if ! resp="$(curl -fsS --max-time 10 "${curl_hdrs[@]}" -d "$payload" "${BRIDGE_URL}/v1/command" 2>/dev/null)"; then
+      log "send_cmd: enqueue failed (attempt ${attempt}/${CMD_RETRIES}), retrying…"
+      open_pairing_quiet
+      wait_for_extension 15 || true
+      sleep 0.5
+      continue
+    fi
+    id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$resp" 2>/dev/null || true)"
+    if [[ -z "$id" ]]; then
+      log "send_cmd: bad enqueue response (attempt ${attempt}/${CMD_RETRIES})"
+      sleep 0.5
+      continue
+    fi
+    # capture payloads can be large — longer wait
+    curl_err=0
+    result="$(curl -fsS --max-time 90 "${curl_hdrs[@]}" "${BRIDGE_URL}/v1/result/${id}?timeout=75" 2>/dev/null)" || curl_err=$?
+    if [[ "$curl_err" -ne 0 || -z "$result" ]]; then
+      log "send_cmd: no extension result (attempt ${attempt}/${CMD_RETRIES}), waiting…"
+      open_pairing_quiet
+      wait_for_extension 20 || true
+      continue
+    fi
+    # Success path — parse and print
+    local indent_flag="2"
+    is_json && indent_flag="None"
+    python3 - <<'PY' "$result" "$indent_flag"
 import json, sys
 r = json.loads(sys.argv[1])
 indent = None if sys.argv[2] == "None" else 2
@@ -193,6 +324,13 @@ if not r.get("ok"):
 data = r.get("data")
 print(json.dumps(data if data is not None else r, indent=indent, ensure_ascii=False))
 PY
+    return $?
+  done
+
+  die "no response from extension after ${CMD_RETRIES} attempts.
+  Reload Hermes Chrome (auto-pair) or: $0 pair-open + popup Pair
+  ${EXT_DIR}
+Bridge: ${BRIDGE_URL}"
 }
 
 send_cmd() {
@@ -245,22 +383,29 @@ cmd_list_tv() {
 }
 
 cmd_list_tabs() {
-  local group_only=false url_includes="" title_includes="" limit=""
+  # Default: workspace group only. --all lists every tab (privacy-sensitive).
+  local all_tabs=false url_includes="" title_includes="" limit=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --group|--workspace|-g) group_only=true; shift ;;
+      --all|--every) all_tabs=true; shift ;;
+      --group|--workspace|-g) all_tabs=false; shift ;; # explicit default
       --url) url_includes="${2:-}"; shift 2 ;;
       --title) title_includes="${2:-}"; shift 2 ;;
       --limit) limit="${2:-}"; shift 2 ;;
-      *) die "usage: $0 list-tabs [--group] [--url needle] [--title needle] [--limit N]" ;;
+      *) die "usage: $0 list-tabs [--all] [--url needle] [--title needle] [--limit N]" ;;
     esac
   done
   local payload
-  payload="$(python3 - <<'PY' "$group_only" "$url_includes" "$title_includes" "$limit"
+  payload="$(python3 - <<'PY' "$all_tabs" "$url_includes" "$title_includes" "$limit"
 import json, sys, uuid
-group_only = sys.argv[1] == "true"
+all_tabs = sys.argv[1] == "true"
 url_includes, title_includes, limit = sys.argv[2], sys.argv[3], sys.argv[4]
-obj = {"id": str(uuid.uuid4()), "action": "list_tabs", "groupOnly": group_only}
+obj = {"id": str(uuid.uuid4()), "action": "list_tabs"}
+if all_tabs:
+    obj["allTabs"] = True
+    obj["groupOnly"] = False
+else:
+    obj["groupOnly"] = True
 if url_includes:
     obj["urlIncludes"] = url_includes
 if title_includes:
@@ -491,6 +636,43 @@ cmd_token_setup() {
   bash "${ROOT}/scripts/token-setup.sh" "$@"
 }
 
+cmd_show_token() {
+  if [[ -z "${HERMES_CHROME_BRIDGE_TOKEN:-}" && -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+  fi
+  if [[ -z "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+    die "no token (start bridge once to auto-generate, or: $0 token-setup generate)"
+  fi
+  if is_json; then
+    python3 -c 'import json,os; print(json.dumps({"ok":True,"token_set":True,"len":len(os.environ.get("HERMES_CHROME_BRIDGE_TOKEN",""))}))'
+  else
+    echo "token_set=true len=${#HERMES_CHROME_BRIDGE_TOKEN} file=${ENV_FILE}"
+    echo "Paste into extension Options, or click Pair while pairing window is open."
+    echo "To print the secret: $0 token-setup show  (does not print raw secret)"
+    echo "Raw secret is in: $ENV_FILE (chmod 600)"
+  fi
+}
+
+cmd_pair_open() {
+  cmd_bridge_start
+  local -a curl_hdrs=(-H 'Content-Type: application/json')
+  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+    curl_hdrs+=(-H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}")
+  fi
+  local resp
+  resp="$(curl -fsS --max-time 5 "${curl_hdrs[@]}" -d '{}' "${BRIDGE_URL}/v1/pair-open")"
+  if is_json; then
+    echo "$resp"
+  else
+    echo "$resp"
+    echo "Next: open Hermes Chrome popup/Options → Pair (within pairing window)."
+  fi
+}
+
 cmd_capture() {
   # hermes-chrome.sh capture [--prefer gc|nq|auto|active] [--out path.png]
   # Large PNG base64 must NOT go through bash vars / argv — write temp files.
@@ -510,23 +692,38 @@ cmd_capture() {
   cmd_bridge_start
 
   python3 - <<'PY' "$BRIDGE_URL" "$prefer" "$out"
-import base64, json, sys, uuid, urllib.error, urllib.request
+import base64, json, os, sys, uuid, urllib.error, urllib.request
 from pathlib import Path
 
 bridge, prefer, out = sys.argv[1], sys.argv[2], Path(sys.argv[3])
 cmd_id = str(uuid.uuid4())
-payload = json.dumps({"id": cmd_id, "action": "capture", "prefer": prefer, "settleMs": 400}).encode()
+obj = {"id": cmd_id, "action": "capture", "prefer": prefer, "settleMs": 400}
+if prefer == "active":
+    obj["allowActiveCapture"] = True
+    obj["allowCrossWorkspace"] = True
+if prefer in ("gc", "nq"):
+    obj["allowCrossWorkspace"] = True
+payload = json.dumps(obj).encode()
+headers = {"Content-Type": "application/json"}
+tok = (os.environ.get("HERMES_CHROME_BRIDGE_TOKEN") or "").strip()
+if tok:
+    headers["X-Hermes-Chrome-Token"] = tok
 req = urllib.request.Request(
     f"{bridge}/v1/command",
     data=payload,
     method="POST",
-    headers={"Content-Type": "application/json"},
+    headers=headers,
 )
 with urllib.request.urlopen(req, timeout=15) as r:
     enq = json.loads(r.read().decode())
 rid = enq.get("id") or cmd_id
 try:
-    with urllib.request.urlopen(f"{bridge}/v1/result/{rid}?timeout=75", timeout=90) as r:
+    rreq = urllib.request.Request(
+        f"{bridge}/v1/result/{rid}?timeout=75",
+        headers={k: v for k, v in headers.items() if k != "Content-Type"},
+        method="GET",
+    )
+    with urllib.request.urlopen(rreq, timeout=90) as r:
         body = r.read()
 except urllib.error.HTTPError as e:
     print("error:", e.read().decode(errors="replace")[:500], file=sys.stderr)
@@ -568,12 +765,18 @@ Install Hermes Chrome extension (one-time):
      (or install from Chrome Web Store when published)
    - After upgrades: Reload + accept permissions + click icon
 
-3. Pin the extension, click its icon once (starts long-poll).
+3. Auth (required by default since v1.5.0):
+     $0 bridge-start      # auto-writes ~/.hermes/run/hermes-chrome/bridge.env
+     $0 pair-open         # open pairing window
+     # Extension popup/Options → Pair  (or paste token from bridge.env)
+     # CLI auto-loads bridge.env for X-Hermes-Chrome-Token
 
-4. Test:
-     $0 bridge-status     # extension_connected should become true after icon click
-     $0 ping              # require version >= 1.4.0 for fetch_url / page-assets
-     $0 list-tabs --group
+4. Pin the extension, click its icon once (starts long-poll).
+
+5. Test:
+     $0 bridge-status     # auth:true, extension_connected after Pair + icon
+     $0 ping              # require version >= 1.5.0 for security defaults
+     $0 list-tabs         # workspace only; use --all for every tab
      $0 start https://example.com/
      $0 check-url https://example.com/
      $0 download https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf
@@ -585,12 +788,14 @@ Install Hermes Chrome extension (one-time):
 
 Notes:
 - Default workspace: Chrome Tab Group titled "Hermes" (blue, configurable).
+- Bridge token is ON by default (local control plane). Do not disable unless you accept risk.
+- CORS allows chrome-extension:// origins only (not *).
+- list-tabs defaults to workspace; eval/click/type default workspace-only.
 - capture uses chrome.tabs.captureVisibleTab (may briefly activate target tab).
 - check-url / analyze / download (direct) are local Python — no cloud.
-- download --cookies uses extension fetch_url (daily Chrome cookie jar).
+- download --cookies uses extension fetch_url (daily Chrome cookie jar; private hosts blocked).
 - Not the same as Agent Chrome profile (~/.hermes/chrome-debug).
 - Gold pipeline: TV_CAPTURE_BACKEND=hermes-chrome (default in gold-usd-report).
-- Optional auth: export HERMES_CHROME_BRIDGE_TOKEN=...
 EOF
 }
 
@@ -609,7 +814,7 @@ cmd_uninstall_launchd() {
 usage() {
   sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
   echo
-  echo "commands: start|open|new-tab|navigate|list-tabs|eval|click|type|page-assets|check-tab-links|check-url|download|analyze|policy-show|token-setup|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|bridge-restart|install-launchd|uninstall-launchd|install-help"
+  echo "commands: start|open|new-tab|navigate|list-tabs|eval|click|type|page-assets|check-tab-links|check-url|download|analyze|policy-show|token-setup|pair-open|show-token|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|bridge-restart|install-launchd|uninstall-launchd|install-help"
   echo "flags: --json|--json-only|-j  --quiet|-q"
 }
 
@@ -654,6 +859,8 @@ main() {
     analyze|check-file|check_file) cmd_analyze "$@" ;;
     policy-show|policy) cmd_policy_show "$@" ;;
     token-setup)    cmd_token_setup "$@" ;;
+    pair-open|pair_open) cmd_pair_open ;;
+    show-token|show_token) cmd_show_token ;;
     status)         cmd_status ;;
     stop)           cmd_stop ;;
     ping)           cmd_ping ;;

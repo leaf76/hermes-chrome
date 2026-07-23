@@ -2,6 +2,7 @@
   "allow_hosts": [],
   "deny_hosts": [],
   "require_https": false,
-  "block_ip_literals": false,
-  "_comment": "Copy to ~/.hermes/run/hermes-chrome/policy.json. Empty allow_hosts = allow all except deny_hosts. Patterns: example.com or *.example.com"
+  "block_ip_literals": true,
+  "block_private_hosts": true,
+  "_comment": "Copy to ~/.hermes/run/hermes-chrome/policy.json. Empty allow_hosts = allow all except deny_hosts and private/IP blocks. Patterns: example.com or *.example.com. Set block_private_hosts/block_ip_literals false only if you need local-dev downloads."
 }

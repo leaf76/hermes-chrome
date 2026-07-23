@@ -37,6 +37,35 @@ DEFAULT_BRIDGE = os.environ.get("HERMES_CHROME_BRIDGE", "http://127.0.0.1:19876"
 )
 
 
+def _bridge_token() -> str:
+    tok = (
+        os.environ.get("HERMES_CHROME_BRIDGE_TOKEN")
+        or os.environ.get("HERMES_TABGROUP_BRIDGE_TOKEN")
+        or ""
+    ).strip()
+    if tok:
+        return tok
+    run = os.environ.get("HERMES_CHROME_RUN") or os.path.join(
+        os.path.expanduser("~"), ".hermes", "run", "hermes-chrome"
+    )
+    env_path = Path(run) / "bridge.env"
+    if not env_path.is_file():
+        return ""
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if line.startswith("HERMES_CHROME_BRIDGE_TOKEN="):
+                val = line.split("=", 1)[1].strip().strip("'").strip('"')
+                return val
+    except OSError:
+        return ""
+    return ""
+
+
 def default_download_dir() -> Path:
     run = os.environ.get("HERMES_CHROME_RUN") or os.path.join(
         os.path.expanduser("~"), ".hermes", "run", "hermes-chrome"
@@ -192,18 +221,25 @@ def _bridge_command(bridge: str, payload: dict[str, Any], *, timeout_s: float = 
     cid = payload.get("id") or str(uuid.uuid4())
     payload = {**payload, "id": cid}
     data = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"}
+    tok = _bridge_token()
+    if tok:
+        headers["X-Hermes-Chrome-Token"] = tok
     req = urllib.request.Request(
         f"{bridge}/v1/command",
         data=data,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=15) as r:
         enq = json.loads(r.read().decode())
     rid = enq.get("id") or cid
-    with urllib.request.urlopen(
-        f"{bridge}/v1/result/{rid}?timeout={int(timeout_s)}", timeout=timeout_s + 15
-    ) as r:
+    result_req = urllib.request.Request(
+        f"{bridge}/v1/result/{rid}?timeout={int(timeout_s)}",
+        headers={k: v for k, v in headers.items() if k != "Content-Type"},
+        method="GET",
+    )
+    with urllib.request.urlopen(result_req, timeout=timeout_s + 15) as r:
         body = json.loads(r.read().decode())
     if not body.get("ok"):
         raise RuntimeError(body.get("error") or str(body))
