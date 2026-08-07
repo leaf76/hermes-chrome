@@ -1,0 +1,10 @@
+{
+  "name": "com.leaf76.hermes_chrome",
+  "description": "Hermes Chrome local companion — starts the HTTP bridge for agents",
+  "path": "__HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://mkoaoadlkijccmmbkioagnlngbbeocfa/",
+    "chrome-extension://__EXTRA_EXTENSION_ID__/"
+  ]
+}

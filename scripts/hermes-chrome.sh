@@ -25,6 +25,8 @@
 #   hermes-chrome.sh policy-show | token-setup | pair-open | show-token
 #   hermes-chrome.sh bridge-start|bridge-stop|bridge-status|bridge-restart
 #   hermes-chrome.sh install-launchd|uninstall-launchd|install-help
+#   hermes-chrome.sh install-for-agent   # bridge + native host + optional MCP (recommended)
+#   hermes-chrome.sh install-native-host # Chrome Native Messaging only
 #
 # Global flags (before or after command):
 #   --json / --json-only / -j   stdout = JSON only (quiet bridge messages)
@@ -751,13 +753,49 @@ print(json.dumps(meta, indent=2, ensure_ascii=False))
 PY
 }
 
+cmd_install_for_agent() {
+  local helper="${SCRIPT_DIR}/install-for-agent.sh"
+  [[ -f "$helper" ]] || die "missing $helper"
+  bash "$helper" "$@"
+}
+
+cmd_install_native_host() {
+  local helper="${SCRIPT_DIR}/install-native-host.sh"
+  [[ -f "$helper" ]] || die "missing $helper"
+  bash "$helper" "${1:-install}"
+}
+
 cmd_install_help() {
   cat <<EOF
-Install Hermes Chrome extension (one-time):
+=== Recommended: agent-ready install (any agent) ===
+
+  $0 install-for-agent
+  # Windows PowerShell:
+  #   powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1
+
+Installs:
+  • local bridge (autostart on macOS/Windows)
+  • Chrome Native Messaging host (extension auto-starts bridge)
+  • optional MCP registration for Grok when ~/.grok exists
+  • same MCP entrypoint works for Cursor / Claude Desktop / etc.
+
+Then:
+  1. Enable Hermes Chrome v1.7+ (CWS or Load unpacked → ${EXT_DIR})
+  2. Reload + click the extension icon once
+  3. Wait for auto-pair (or popup → Pair)
+  4. Restart MCP agent sessions for hermes_chrome_* tools
+     (CLI users only need steps 1–3)
+
+Smoke:
+  $0 --json bridge-status
+  $0 --json ping
+
+=== Manual install (CLI only) ===
 
 1. Start bridge (optional; CLI auto-starts; launchd recommended):
      $0 bridge-start
      $0 install-launchd   # macOS: start at login + KeepAlive
+     # Windows: scripts/install-windows.ps1
 
 2. Chrome → chrome://extensions
    - Enable "Developer mode"
@@ -787,6 +825,9 @@ Install Hermes Chrome extension (one-time):
      $0 stop
 
 Notes:
+- CWS extension alone cannot listen on :19876 — install companion once (native host + bridge).
+- After companion install, clicking the extension icon should auto-start the bridge.
+- MCP (mcp_server.py) is agent-agnostic: Grok, Cursor, Claude Desktop, Windsurf, …
 - Default workspace: Chrome Tab Group titled "Hermes" (blue, configurable).
 - Bridge token is ON by default (local control plane). Do not disable unless you accept risk.
 - CORS allows chrome-extension:// origins only (not *).
@@ -795,7 +836,10 @@ Notes:
 - check-url / analyze / download (direct) are local Python — no cloud.
 - download --cookies uses extension fetch_url (daily Chrome cookie jar; private hosts blocked).
 - Not the same as Agent Chrome profile (~/.hermes/chrome-debug).
-- Gold pipeline: TV_CAPTURE_BACKEND=hermes-chrome (default in gold-usd-report).
+- Site-agnostic: open/capture any http(s) URL; optional finders are not required.
+- Guides: docs/GUIDE.md · docs/GUIDE.zh-TW.md · extension help.html
+- MCP entrypoint: python3 ${ROOT}/mcp_server.py
+- Native host name: com.leaf76.hermes_chrome
 EOF
 }
 
@@ -814,7 +858,7 @@ cmd_uninstall_launchd() {
 usage() {
   sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
   echo
-  echo "commands: start|open|new-tab|navigate|list-tabs|eval|click|type|page-assets|check-tab-links|check-url|download|analyze|policy-show|token-setup|pair-open|show-token|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|bridge-restart|install-launchd|uninstall-launchd|install-help"
+  echo "commands: start|open|new-tab|navigate|list-tabs|eval|click|type|page-assets|check-tab-links|check-url|download|analyze|policy-show|token-setup|pair-open|show-token|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|bridge-restart|install-launchd|uninstall-launchd|install-for-agent|install-native-host|install-help"
   echo "flags: --json|--json-only|-j  --quiet|-q"
 }
 
@@ -872,6 +916,10 @@ main() {
     bridge-restart) cmd_bridge_restart ;;
     install-launchd) cmd_install_launchd ;;
     uninstall-launchd) cmd_uninstall_launchd ;;
+    install-for-agent|install_for_agent|install-agent)
+                    cmd_install_for_agent "$@" ;;
+    install-native-host|install_native_host|native-host)
+                    cmd_install_native_host "$@" ;;
     install-help)   cmd_install_help ;;
     -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 1 ;;
     *) die "unknown command: $cmd" ;;

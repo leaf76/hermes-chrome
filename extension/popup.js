@@ -53,8 +53,23 @@ async function refresh() {
   // Auth status
   if (authBadge) {
     if (!s.bridgeOk) {
-      setBadge(authBadge, null, "n/a");
-      if (authLine) authLine.textContent = "";
+      setBadge(authBadge, false, "no bridge");
+      if (authLine) {
+        const nh = s.nativeHost || {};
+        const nhErr = nh.error || "";
+        if (nhErr && /not found|specified native messaging host/i.test(nhErr)) {
+          authLine.textContent =
+            "Companion not installed. One-time: hermes-chrome.sh install-for-agent " +
+            "(Windows: scripts/install-windows.ps1) — installs native host + bridge.";
+        } else if (nh.ok === false && nhErr) {
+          authLine.textContent =
+            "Bridge down; native host: " + nhErr + " — click Reconnect or re-run install-for-agent.";
+        } else {
+          authLine.textContent =
+            "Local bridge not on :19876. Install companion once: install-for-agent " +
+            "(starts bridge via Native Messaging). Then click Reconnect.";
+        }
+      }
     } else if (!s.bridgeAuth) {
       setBadge(authBadge, false, "off (insecure)");
       if (authLine) {
@@ -93,6 +108,10 @@ document.getElementById("btnPair").onclick = async () => {
 };
 document.getElementById("btnOptions").onclick = () => {
   chrome.runtime.openOptionsPage();
+};
+document.getElementById("btnGuide").onclick = () => {
+  const url = chrome.runtime.getURL("help.html");
+  chrome.tabs.create({ url, active: true });
 };
 
 refresh();

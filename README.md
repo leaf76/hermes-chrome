@@ -2,9 +2,15 @@
 
 **Repo:** https://github.com/leaf76/hermes-chrome  
 
-Local companion that makes **Chrome easy for Hermes / local AI agents to operate**—without hijacking the tab you are using.
+Local companion that makes **Chrome easy for any local AI agent to operate**—open
+**any website**, capture, list tabs, light DOM—without hijacking the tab you are using.
+
+**Not locked to one site or product.** GitHub, docs, dashboards, news, charts… if
+Chrome can open the URL, Hermes Chrome can drive that tab.
 
 Tab Groups are one isolation tool, not the whole product.
+
+**Guides:** [docs/GUIDE.md](docs/GUIDE.md) · [繁中 docs/GUIDE.zh-TW.md](docs/GUIDE.zh-TW.md) · extension popup → **Guide**
 
 **Privacy policy (Chrome Web Store):**  
 https://leaf76.github.io/hermes-chrome/privacy-policy  
@@ -15,25 +21,29 @@ https://leaf76.github.io/hermes-chrome/privacy-policy
 
 | Goal | How |
 |------|-----|
-| Drive Chrome from a CLI / Hermes | Local bridge + Chrome extension |
+| Drive **any page** from CLI / agents | Local bridge + Chrome extension |
 | Keep your active browsing | Agent work goes to a dedicated workspace (Tab Group by default) |
 | Reuse your real cookies / SSO | Runs on **daily Chrome**, not a headless-only sandbox |
 | Reduce focus steal | New tabs default to `active: false`; no AppleScript `activate` |
+| Multi-agent (not one vendor) | HTTP bridge + optional MCP (`mcp_server.py`) |
 
 ## Features (today)
 
 1. **Agent workspace** — native Chrome Tab Group (`Hermes` / configurable title)
 2. **CLI** — `start` / `open` / `new-tab` / `navigate` / `list-tabs` / `status` / `stop` / `ping`
 3. **Light DOM ops** — `eval` / `click` / `type` / `page-assets` (tabId)
-4. **Capture** — generic tab PNG via `captureVisibleTab` (`prefer=gc|nq` is gold finder only)
+4. **Capture** — any tab PNG via `captureVisibleTab` (default = workspace; optional finders available)
 5. **URL check** — local `check-url` (scheme / redirect / heuristics; no cloud)
 6. **Download + analyze** — `download` (optional `--cookies`) → `analyze` images/zip/tar (zip-bomb & path safety heuristics)
 7. **Policy** — optional host allow/deny list (`~/.hermes/run/hermes-chrome/policy.json`)
 8. **Agent JSON** — `--json` / `--json-only` (no bridge chatter on stdout)
 9. **Local bridge** — `127.0.0.1:19876` queue + **extension last-seen** on `/v1/health`
 10. **launchd (macOS)** — `install-launchd` for login + KeepAlive bridge; **token by default**
-11. **Auth + pairing** — shared token (`bridge.env`); extension Pair / Options; CORS locked to extension origins
-12. **Fallback** — named window helper if you cannot load the extension yet
+11. **Windows Scheduled Task** — `install-windows.ps1` keeps bridge on login
+12. **Native Messaging host** — extension auto-starts bridge (`com.leaf76.hermes_chrome`)
+13. **Stdio MCP** — `mcp_server.py` for any MCP client (`install-for-agent`)
+14. **Auth + pairing** — shared token (`bridge.env`); extension Pair / Options; CORS locked to extension origins
+15. **Fallback** — named window helper if you cannot load the extension yet
 
 ## Planned / non-goals
 
@@ -44,10 +54,15 @@ https://leaf76.github.io/hermes-chrome/privacy-policy
 
 | Path | Role |
 |------|------|
-| `extension/` | MV3 Chrome extension |
+| `extension/` | MV3 Chrome extension (+ Native Messaging client) |
 | `bridge.py` | Local HTTP bridge (`127.0.0.1:19876`) |
-| `lib/` | Local `check_url` / `download_file` / `analyze_file` (Python) |
+| `native_host/` | Chrome Native Messaging host (auto-start bridge) |
+| `mcp_server.py` | Stdio MCP for any MCP client (stdlib only) |
+| `lib/` | `bridge_runtime`, check_url, download, analyze (Python) |
 | `scripts/hermes-chrome.sh` | Main CLI |
+| `scripts/install-for-agent.sh` | One-shot: bridge + native host + optional MCP |
+| `scripts/install-native-host.sh` / `.ps1` | Register Native Messaging host only |
+| `scripts/install-windows.ps1` | Windows: Task + native host + optional MCP |
 | `scripts/install-launchd.sh` | macOS bridge autostart |
 | `scripts/daily-chrome-tabgroup.sh` | Backward-compatible alias → `hermes-chrome.sh` |
 | `scripts/daily-chrome-agent-window.sh` | Named-window fallback (no extension) |
@@ -55,7 +70,45 @@ https://leaf76.github.io/hermes-chrome/privacy-policy
 
 Runtime pid/log: `~/.hermes/run/hermes-chrome/` (not in git).
 
-## Quick start
+## Quick start (agent-ready — recommended)
+
+**Chrome Web Store alone cannot run a local control plane** (Chrome security).
+Install the **companion once**, then the extension auto-starts the bridge via
+**Native Messaging**. Works for **any** agent (CLI, Grok, Cursor, Claude Desktop…).
+
+```bash
+# macOS / Linux
+./scripts/hermes-chrome.sh install-for-agent
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+```
+
+What that does:
+
+1. Starts the bridge + **autostart** (launchd / Windows Scheduled Task)
+2. Registers **Chrome Native Messaging host** `com.leaf76.hermes_chrome`
+   (extension click/reload → host ensures bridge on `:19876`)
+3. Writes `~/.hermes/run/hermes-chrome/bridge.env` (token) + opens pairing
+4. Optionally registers **stdio MCP** (`mcp_server.py`) for Grok if `~/.grok` exists  
+   (same MCP file works for Cursor / Claude Desktop — point their config at it)
+
+Then:
+
+1. Install/enable **Hermes Chrome v1.7+** (CWS or Load unpacked → `./extension`)
+2. Accept **nativeMessaging** if prompted → **Reload** → click icon once
+3. Wait for auto-pair (or popup → Pair)
+4. **CLI users:** done — `hermes-chrome.sh --json ping`  
+   **MCP users:** restart agent session so `hermes_chrome_*` tools load
+5. Smoke: `hermes_chrome_status` / `capture` (MCP) or CLI equivalents
+
+```bash
+./scripts/hermes-chrome.sh --json bridge-status   # extension_connected:true
+./scripts/hermes-chrome.sh --json ping
+./scripts/hermes-chrome.sh install-native-host status
+```
+
+### CLI-only quick start (no MCP)
 
 ```bash
 ./scripts/hermes-chrome.sh install-launchd   # macOS recommended (creates token + KeepAlive)
@@ -75,6 +128,35 @@ Runtime pid/log: `~/.hermes/run/hermes-chrome/` (not in git).
 ./scripts/hermes-chrome.sh status
 ./scripts/hermes-chrome.sh stop
 ```
+
+### MCP for any client (manual)
+
+Same stdio server works for **Grok, Cursor, Claude Desktop, Windsurf, VS Code**, etc.
+
+```toml
+# Example: ~/.grok/config.toml  (or Cursor mcp.json / Claude config equivalent)
+[mcp_servers.hermes-chrome]
+command = "/path/to/python3"
+args = ["/path/to/hermes-chrome/mcp_server.py"]
+enabled = true
+startup_timeout_sec = 45
+tool_timeout_sec = 120
+
+[mcp_servers.hermes-chrome.env]
+HERMES_CHROME_ROOT = "/path/to/hermes-chrome"
+```
+
+```bash
+# Grok CLI helper
+grok mcp add hermes-chrome -- /path/to/python3 /path/to/hermes-chrome/mcp_server.py
+```
+
+MCP tools: `hermes_chrome_status`, `hermes_chrome_ping`, `hermes_chrome_list_tabs`,
+`hermes_chrome_list_tv`, `hermes_chrome_capture`, `hermes_chrome_open`,
+`hermes_chrome_navigate`, `hermes_chrome_eval`, `hermes_chrome_click`,
+`hermes_chrome_type`.
+
+CLI-only agents can skip MCP and call `hermes-chrome.sh --json …` or HTTP `:19876`.
 
 ### Security model (read this)
 
@@ -132,10 +214,13 @@ Bridge auth: CLI auto-loads `bridge.env`. Extension uses Pair or Options token f
 | Need | Tool |
 |------|------|
 | Real daily Chrome cookies / SSO / open tabs / capture | **Hermes Chrome** (this project) |
+| Grok / Cursor tools list | `mcp_server.py` via `install-for-agent` |
 | Public pages / multi-step DOM automation in isolated jar | Headless Hermes `browser_*` / Playwright |
 | Headed but not daily Chrome | Agent Chrome `:9333` |
 
-Always gate with `ping` (or `bridge-status` + `extension_connected`) before a command chain. Fail-fast on timeout.
+Always gate with `hermes_chrome_status` / `ping` (or `bridge-status` + `extension_connected`) before a command chain. Fail-fast on timeout.
+
+**Same machine required:** Chrome, bridge, and the agent must share `localhost`. A Grok session on Windows cannot drive Chrome on a Mac.
 
 ## Chrome Web Store
 
@@ -146,32 +231,30 @@ Always gate with `ping` (or `bridge-status` + `extension_connected`) before a co
 
 See `store/UPLOAD_GUIDE.md`.
 
-## Capture (any page / gold helper)
+## Capture (any page)
 
 ```bash
-./scripts/hermes-chrome.sh capture --prefer active --out /tmp/page.png
-./scripts/hermes-chrome.sh capture --prefer gc --out /tmp/gc.png   # title hint only
-./scripts/hermes-chrome.sh list-tv                                  # optional TV tab list
-./scripts/hermes-chrome.sh list-tabs --url tradingview.com
+# Default: tab in the Hermes agent workspace
+./scripts/hermes-chrome.sh capture --prefer auto --out /tmp/page.png
+
+# Currently focused tab (privacy opt-in)
+./scripts/hermes-chrome.sh capture --prefer active --out /tmp/active.png
+
+# Filter by URL fragment
+./scripts/hermes-chrome.sh list-tabs --url example.com
+./scripts/hermes-chrome.sh open 'https://example.com/docs'
 ```
 
-`capture` is **generic** (any http/https tab via tabId / active / urlIncludes / title hints).  
-Gold’s `prefer=gc|nq` is only a **finder hint**, not a product limit or hard-coded site permission.
+Also supports `tabId`, `urlIncludes`, `titleIncludes` on the JSON/bridge API.
 
-Gold pipeline (`~/gold-usd-report`) auto order:
+Optional legacy finders (`prefer=gc|nq`, `list-tv`) exist for specific chart workflows;
+they are **not** required and do not limit the product to those sites.
 
-1. CDP (if up)
-2. **Hermes Chrome** `captureVisibleTab` via bridge `:19876` (+ preflight open missing GC/NQ tabs)
-3. macOS screencapture window (fallback; disabled when `TV_CAPTURE_BACKEND=hermes-chrome`)
+### Optional: external chart pipelines
 
-```bash
-TV_CAPTURE_BACKEND=hermes-chrome ./.venv/bin/python -c \
-  'from tv_capture import capture_tradingview; print(capture_tradingview(prefer="gc"))'
-# skip in auto: TV_HERMES_CHROME=0
-# disable auto-open missing TV tabs: TV_AUTO_OPEN_TABS=0
-```
-
-Requires extension **v1.3.0+** reloaded + icon clicked for full CLI surface; capture since v1.2.0+.
+Some private tools (e.g. a gold chart report) may call Hermes Chrome as one capture
+backend. That integration lives **outside** this repo and must pass explicit URLs
+or finder flags — it does not redefine Hermes Chrome as a single-site product.
 
 ## Related (outside this repo)
 

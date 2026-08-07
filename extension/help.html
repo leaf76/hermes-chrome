@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes Chrome — Guide</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0f172a;
+        --card: #1e293b;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #3b82f6;
+        --border: #334155;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f8fafc;
+          --card: #fff;
+          --text: #0f172a;
+          --muted: #64748b;
+          --border: #e2e8f0;
+        }
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 8px;
+      }
+      h2 {
+        font-size: 1.1rem;
+        margin: 28px 0 10px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 6px;
+      }
+      p,
+      li {
+        color: var(--text);
+        font-size: 14px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px 16px;
+        margin: 12px 0;
+      }
+      code,
+      pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+      pre {
+        background: #020617;
+        color: #e2e8f0;
+        padding: 12px;
+        border-radius: 8px;
+        overflow-x: auto;
+      }
+      @media (prefers-color-scheme: light) {
+        pre {
+          background: #0f172a;
+        }
+      }
+      a {
+        color: var(--accent);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        border: 1px solid var(--border);
+        padding: 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+      .lang {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 16px;
+        font-size: 13px;
+      }
+      .lang button {
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .lang button.active {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      [data-lang="zh"] {
+        display: none;
+      }
+      body.show-zh [data-lang="en"] {
+        display: none;
+      }
+      body.show-zh [data-lang="zh"] {
+        display: block;
+      }
+      body.show-zh table[data-lang="zh"] {
+        display: table;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="lang">
+        <button type="button" id="btnEn" class="active">English</button>
+        <button type="button" id="btnZh">繁體中文</button>
+      </div>
+
+      <section data-lang="en">
+        <h1>Hermes Chrome Guide</h1>
+        <p class="muted">
+          Local agent companion for <strong>any website</strong> — not locked to one product or domain.
+        </p>
+
+        <div class="card">
+          <strong>Works on any page.</strong> Open GitHub, docs, dashboards, news — whatever URL you pass.
+          Optional chart helpers exist but are not required.
+        </div>
+
+        <h2>1. One-time companion install</h2>
+        <p>
+          The Chrome extension alone cannot open a control port (Chrome security). Install the companion
+          once per machine:
+        </p>
+        <pre>./scripts/hermes-chrome.sh install-for-agent
+# Windows:
+# powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1</pre>
+        <p class="muted">Needs real Python 3. Installs bridge + Native Messaging host + optional MCP.</p>
+
+        <h2>2. Enable this extension</h2>
+        <ol>
+          <li>Reload Hermes Chrome (v1.7+) and accept <code>nativeMessaging</code> if asked.</li>
+          <li>Click this extension icon once.</li>
+          <li>Wait for auto-pair, or press <strong>Pair</strong> in the popup.</li>
+          <li>Popup should show Bridge <strong>online</strong>.</li>
+        </ol>
+
+        <h2>3. Use with any page</h2>
+        <pre># Open any URL into the agent workspace
+hermes-chrome.sh open 'https://example.com/'
+hermes-chrome.sh open 'https://github.com/'
+
+# List / capture
+hermes-chrome.sh list-tabs --url example.com
+hermes-chrome.sh capture --prefer auto --out /tmp/page.png
+
+# JSON for agents
+hermes-chrome.sh --json ping</pre>
+
+        <h2>4. Any agent (not only Grok)</h2>
+        <table>
+          <tr>
+            <th>Client</th>
+            <th>How</th>
+          </tr>
+          <tr>
+            <td>CLI / scripts</td>
+            <td><code>hermes-chrome.sh --json …</code> or HTTP <code>127.0.0.1:19876</code></td>
+          </tr>
+          <tr>
+            <td>Grok / Cursor / Claude / …</td>
+            <td>Point MCP at <code>mcp_server.py</code> (same file for all)</td>
+          </tr>
+        </table>
+
+        <h2>Troubleshooting</h2>
+        <ul>
+          <li><strong>Bridge offline</strong> — re-run companion install; click icon; check Python.</li>
+          <li><strong>Native host not found</strong> — run <code>install-native-host</code>; reload extension.</li>
+          <li><strong>Need pair</strong> — popup Pair, or CLI <code>pair-open</code> then Pair.</li>
+          <li><strong>Tab not found</strong> — open URL into Hermes group, or allow cross-workspace in Options.</li>
+        </ul>
+
+        <p class="muted">
+          Full docs on GitHub:
+          <a href="https://github.com/leaf76/hermes-chrome/blob/main/docs/GUIDE.md" target="_blank" rel="noopener"
+            >docs/GUIDE.md</a
+          >
+        </p>
+      </section>
+
+      <section data-lang="zh">
+        <h1>Hermes Chrome 使用教學</h1>
+        <p class="muted">本機 agent companion，<strong>適用任何網站</strong>——不綁死單一產品或網域。</p>
+
+        <div class="card">
+          <strong>任何頁面都能用。</strong> GitHub、文件、後台、新聞……你開什麼 URL 就操作什麼。
+          圖表小工具是可選，不是主線。
+        </div>
+
+        <h2>1. 一次安裝 companion</h2>
+        <p>光裝 extension 不能開控制 port（Chrome 安全模型）。每台電腦裝一次 companion：</p>
+        <pre>./scripts/hermes-chrome.sh install-for-agent
+# Windows:
+# powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1</pre>
+        <p class="muted">需要真的 Python 3。會裝 bridge + Native Messaging host + 可選 MCP。</p>
+
+        <h2>2. 啟用這個 extension</h2>
+        <ol>
+          <li>重新載入 Hermes Chrome（v1.7+），必要時允許 <code>nativeMessaging</code>。</li>
+          <li>點一次 extension icon。</li>
+          <li>等 auto-pair，或按 popup 的 <strong>Pair</strong>。</li>
+          <li>Popup 應顯示 Bridge <strong>online</strong>。</li>
+        </ol>
+
+        <h2>3. 操作任意頁面</h2>
+        <pre># 在 agent 工作區開啟任何 URL
+hermes-chrome.sh open 'https://example.com/'
+hermes-chrome.sh open 'https://github.com/'
+
+# 列表 / 截圖
+hermes-chrome.sh list-tabs --url example.com
+hermes-chrome.sh capture --prefer auto --out /tmp/page.png
+
+# 給 agent 的 JSON
+hermes-chrome.sh --json ping</pre>
+
+        <h2>4. 各種 agent（不限 Grok）</h2>
+        <table data-lang="zh">
+          <tr>
+            <th>Client</th>
+            <th>用法</th>
+          </tr>
+          <tr>
+            <td>CLI / 腳本</td>
+            <td><code>hermes-chrome.sh --json …</code> 或 HTTP <code>127.0.0.1:19876</code></td>
+          </tr>
+          <tr>
+            <td>Grok / Cursor / Claude / …</td>
+            <td>MCP 指到同一支 <code>mcp_server.py</code></td>
+          </tr>
+        </table>
+
+        <h2>疑難排解</h2>
+        <ul>
+          <li><strong>Bridge offline</strong> — 重跑 companion；點 icon；檢查 Python。</li>
+          <li><strong>Native host not found</strong> — 跑 <code>install-native-host</code>；reload extension。</li>
+          <li><strong>要 Pair</strong> — popup Pair，或 CLI <code>pair-open</code> 再 Pair。</li>
+          <li><strong>找不到分頁</strong> — 用 open 開進 Hermes group，或 Options 允許跨 workspace。</li>
+        </ul>
+
+        <p class="muted">
+          GitHub 完整教學：
+          <a
+            href="https://github.com/leaf76/hermes-chrome/blob/main/docs/GUIDE.zh-TW.md"
+            target="_blank"
+            rel="noopener"
+            >docs/GUIDE.zh-TW.md</a
+          >
+        </p>
+      </section>
+    </main>
+    <script>
+      const body = document.body;
+      const btnEn = document.getElementById("btnEn");
+      const btnZh = document.getElementById("btnZh");
+      function show(lang) {
+        body.classList.toggle("show-zh", lang === "zh");
+        btnEn.classList.toggle("active", lang === "en");
+        btnZh.classList.toggle("active", lang === "zh");
+        try {
+          localStorage.setItem("hermesChromeHelpLang", lang);
+        } catch (_) {}
+      }
+      btnEn.onclick = () => show("en");
+      btnZh.onclick = () => show("zh");
+      try {
+        const saved = localStorage.getItem("hermesChromeHelpLang");
+        if (saved === "zh" || saved === "en") show(saved);
+        else if (navigator.language && navigator.language.toLowerCase().startsWith("zh")) show("zh");
+      } catch (_) {}
+    </script>
+  </body>
+</html>

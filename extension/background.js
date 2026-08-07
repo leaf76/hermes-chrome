@@ -5,11 +5,13 @@
  * hijacking the user's active tab. Default workspace is a Tab Group; more
  * Chrome ops can land here without renaming the product.
  *
- * Long-polls a user-run local bridge (default http://127.0.0.1:19876).
+ * Long-polls a local bridge (default http://127.0.0.1:19876).
+ * When Native Messaging host is installed, connectNative auto-starts the bridge.
  * No remote analytics. No third-party network calls.
  */
 
 const DEFAULT_BRIDGE = "http://127.0.0.1:19876";
+const NATIVE_HOST_NAME = "com.leaf76.hermes_chrome";
 const GROUP_TITLE = "Hermes";
 const GROUP_COLOR = "blue";
 const GROUP_KEY = "hermesChromeGroupId";
@@ -22,6 +24,13 @@ let lastAutoPairAt = 0;
 let autoPairFailStreak = 0;
 const AUTO_PAIR_MIN_INTERVAL_MS = 2500;
 const AUTO_PAIR_MAX_STREAK = 60; // ~2.5 min of attempts then slow down
+
+/** @type {chrome.runtime.Port | null} */
+let nativePort = null;
+/** @type {{ ok: boolean|null, at: number, detail?: any, error?: string }} */
+let nativeStatus = { ok: null, at: 0 };
+let lastNativeEnsureAt = 0;
+const NATIVE_ENSURE_MIN_INTERVAL_MS = 8000;
 
 /** Only http(s) for agent navigation / open (block javascript:/file:/etc). */
 function assertHttpUrl(url, label = "url") {
@@ -221,6 +230,63 @@ async function openInGroup(url, { newTab = false } = {}) {
   return { groupId, tabId: tab.id, mode: "new_tab" };
 }
 
+/**
+ * Ask the OS-registered Native Messaging host to ensure the local bridge is up.
+ * No-op (with status error) when the companion is not installed.
+ */
+function ensureNativeCompanion(force = false) {
+  const now = Date.now();
+  if (!force && now - lastNativeEnsureAt < NATIVE_ENSURE_MIN_INTERVAL_MS) {
+    return nativeStatus;
+  }
+  lastNativeEnsureAt = now;
+
+  if (!chrome.runtime.connectNative) {
+    nativeStatus = {
+      ok: false,
+      at: now,
+      error: "nativeMessaging API unavailable",
+    };
+    return nativeStatus;
+  }
+
+  try {
+    if (!nativePort) {
+      nativePort = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+      nativePort.onMessage.addListener((msg) => {
+        nativeStatus = {
+          ok: !!(msg && (msg.ok === true || msg.service === "hermes-chrome-bridge")),
+          at: Date.now(),
+          detail: msg,
+        };
+        noteActivity("native_host", {
+          ok: nativeStatus.ok,
+          event: msg?.event || msg?.action || "message",
+        }).catch(() => {});
+      });
+      nativePort.onDisconnect.addListener(() => {
+        const err = chrome.runtime.lastError?.message || "disconnected";
+        // "Specified native messaging host not found" = companion not installed
+        nativeStatus = {
+          ok: false,
+          at: Date.now(),
+          error: err,
+        };
+        nativePort = null;
+      });
+    }
+    nativePort.postMessage({ action: "ensure" });
+  } catch (e) {
+    nativeStatus = {
+      ok: false,
+      at: Date.now(),
+      error: String(e?.message || e),
+    };
+    nativePort = null;
+  }
+  return nativeStatus;
+}
+
 async function status() {
   const settings = await getSettings();
   const groupId = await getStoredGroupId();
@@ -242,25 +308,47 @@ async function status() {
   } catch {
     bridgeOk = false;
   }
+  // If bridge is down, nudge native host (may auto-start it).
+  if (!bridgeOk) {
+    ensureNativeCompanion(false);
+  }
   const lastActivity = await getLastActivity();
   const tokenSet = !!(settings.bridgeToken && settings.bridgeToken.length);
   const authReady = !bridgeAuth || tokenSet;
+  const native = {
+    host: NATIVE_HOST_NAME,
+    ok: nativeStatus.ok,
+    at: nativeStatus.at,
+    error: nativeStatus.error || null,
+    detail: nativeStatus.detail
+      ? {
+          service: nativeStatus.detail.service,
+          auth: nativeStatus.detail.auth,
+          pairing_open: nativeStatus.detail.pairing_open,
+          host_version: nativeStatus.detail.host_version,
+        }
+      : null,
+  };
+  const base = {
+    bridgeUrl: settings.bridgeUrl,
+    bridgeOk,
+    bridgeAuth,
+    pairingOpen,
+    tokenSet,
+    authReady,
+    polling: polling && settings.pollingEnabled,
+    extension: "hermes-chrome",
+    version: chrome.runtime.getManifest().version,
+    lastActivity,
+    allowCrossWorkspace: settings.allowCrossWorkspace,
+    nativeHost: native,
+  };
   if (!exists) {
     return {
       running: false,
       groupId: null,
       tabs: [],
-      bridgeUrl: settings.bridgeUrl,
-      bridgeOk,
-      bridgeAuth,
-      pairingOpen,
-      tokenSet,
-      authReady,
-      polling: polling && settings.pollingEnabled,
-      extension: "hermes-chrome",
-      version: chrome.runtime.getManifest().version,
-      lastActivity,
-      allowCrossWorkspace: settings.allowCrossWorkspace,
+      ...base,
     };
   }
   const tabs = await tabsInGroup(groupId);
@@ -282,17 +370,7 @@ async function status() {
       title: t.title,
       active: t.active,
     })),
-    bridgeUrl: settings.bridgeUrl,
-    bridgeOk,
-    bridgeAuth,
-    pairingOpen,
-    tokenSet,
-    authReady,
-    polling: polling && settings.pollingEnabled,
-    extension: "hermes-chrome",
-    version: chrome.runtime.getManifest().version,
-    lastActivity,
-    allowCrossWorkspace: settings.allowCrossWorkspace,
+    ...base,
   };
 }
 
@@ -556,12 +634,20 @@ async function ensureTradingViewTimeframe(tabId, opts = {}) {
 }
 
 /**
- * Capture a tab viewport as PNG (any http/https page the user/CLI asks for).
- * Optional prefer=gc|nq is only a *finder hint* for gold workflows — not a product limit.
- * Optional ensureTf: { preferred: "5", allowed: ["3","5"] } forces 3m/5m before shot.
+ * Capture a tab viewport as PNG for **any** http(s) page.
+ *
+ * Resolution order (generic by default — no site hardcoding):
+ *   1. tabId
+ *   2. prefer=active / active:true  (opt-in; privacy)
+ *   3. urlIncludes / titleIncludes needles
+ *   4. prefer=auto (default): first tab in Hermes workspace
+ *   5. prefer=gc|nq: optional TradingView product finder (legacy helper only)
+ *
+ * Optional ensureTf: { preferred: "5", allowed: ["3","5"] } — TradingView helper only.
  */
 async function captureTab(cmd) {
   const prefer = (cmd.prefer || cmd.product || "auto").toLowerCase();
+  const settings = await getSettings();
   let tab = null;
   if (cmd.tabId) {
     await assertTabInWorkspace(cmd.tabId, cmd);
@@ -571,7 +657,7 @@ async function captureTab(cmd) {
     if (
       cmd.allowActiveCapture !== true &&
       cmd.allowCrossWorkspace !== true &&
-      !(await getSettings()).allowCrossWorkspace
+      !settings.allowCrossWorkspace
     ) {
       throw new Error(
         "capture of active tab requires allowActiveCapture or allowCrossWorkspace"
@@ -579,43 +665,55 @@ async function captureTab(cmd) {
     }
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
     tab = active;
-  } else if (cmd.urlIncludes) {
+  } else if (cmd.urlIncludes || cmd.titleIncludes) {
     const tabs = await chrome.tabs.query({});
-    const needle = String(cmd.urlIncludes).toLowerCase();
-    tab = tabs.find((t) => (t.url || "").toLowerCase().includes(needle)) || null;
-    if (!tab) throw new Error(`no tab matching urlIncludes=${cmd.urlIncludes}`);
-    await assertTabInWorkspace(tab.id, cmd);
-  } else if (prefer === "gc" || prefer === "nq" || prefer === "auto") {
-    tab = await findTradingViewTab(prefer);
-    if (!tab && prefer === "auto") {
-      // Prefer workspace tab over user's active tab when possible.
-      const groupId = await getStoredGroupId();
-      if (await groupStillExists(groupId)) {
-        const wt = await tabsInGroup(groupId);
-        tab = wt[0] || null;
-      }
+    const urlNeedle = cmd.urlIncludes
+      ? String(cmd.urlIncludes).toLowerCase()
+      : "";
+    const titleNeedle = cmd.titleIncludes
+      ? String(cmd.titleIncludes).toLowerCase()
+      : "";
+    tab =
+      tabs.find((t) => {
+        const u = (t.url || "").toLowerCase();
+        const ti = (t.title || "").toLowerCase();
+        if (urlNeedle && !u.includes(urlNeedle)) return false;
+        if (titleNeedle && !ti.includes(titleNeedle)) return false;
+        return !!(urlNeedle || titleNeedle);
+      }) || null;
+    if (!tab) {
+      throw new Error(
+        `no tab matching urlIncludes=${cmd.urlIncludes || ""} titleIncludes=${cmd.titleIncludes || ""}`
+      );
     }
+    await assertTabInWorkspace(tab.id, cmd);
+  } else if (prefer === "gc" || prefer === "nq") {
+    // Optional product finder (not the default product path).
+    tab = await findTradingViewTab(prefer);
     if (tab) {
-      try {
-        await assertTabInWorkspace(tab.id, {
-          ...cmd,
-          // Gold TV tabs may sit outside Hermes group — allow TV finder path.
-          allowCrossWorkspace:
-            cmd.allowCrossWorkspace === true ||
-            prefer === "gc" ||
-            prefer === "nq" ||
-            (await getSettings()).allowCrossWorkspace,
-        });
-      } catch (e) {
-        if (prefer !== "gc" && prefer !== "nq") throw e;
-      }
+      await assertTabInWorkspace(tab.id, {
+        ...cmd,
+        allowCrossWorkspace:
+          cmd.allowCrossWorkspace === true || settings.allowCrossWorkspace,
+      });
     }
   } else {
-    tab = await findTradingViewTab(prefer);
+    // prefer=auto (default) and any other non-TV prefer: Hermes workspace tab.
+    const groupId = await getStoredGroupId();
+    if (await groupStillExists(groupId)) {
+      const wt = await tabsInGroup(groupId);
+      tab = wt.find((t) => t.active) || wt[0] || null;
+    }
+    if (!tab) {
+      throw new Error(
+        "no workspace tab to capture — open a URL with start/open, or pass tabId / urlIncludes / prefer=active"
+      );
+    }
+    await assertTabInWorkspace(tab.id, cmd);
   }
   if (!tab) throw new Error("no matching tab to capture");
 
-  // Activate so TradingView resumes live feed on background tabs.
+  // Activate target so background pages paint (any site). Keep window unfocused when possible.
   await chrome.tabs.update(tab.id, { active: true });
   if (tab.windowId != null) {
     try {
@@ -625,19 +723,18 @@ async function captureTab(cmd) {
     }
   }
 
-  // Ensure 3m/5m when requested (gold pipeline).
+  // Optional TradingView timeframe helper (only when caller requests ensureTf).
   let tfInfo = null;
   const ensureTf = cmd.ensureTf || cmd.ensureTimeframe || null;
   if (ensureTf) {
     tfInfo = await ensureTradingViewTimeframe(tab.id, ensureTf);
-    // Extra paint time after TF switch (new series load).
     const tfWait = Number(cmd.tfSettleMs);
     await new Promise((r) =>
       setTimeout(r, Number.isFinite(tfWait) && tfWait >= 0 ? tfWait : 1200)
     );
   }
 
-  // Nudge chart page to process ticks / paint the latest closed bar.
+  // Nudge page to paint after background wake (generic; safe no-op on most sites).
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -656,9 +753,9 @@ async function captureTab(cmd) {
     /* scripting may be unavailable on some pages — settle still helps */
   }
 
-  // Default settle longer than generic UI capture: TV needs time after tab wake.
+  // Default settle: short for generic pages; callers can raise settleMs for heavy apps.
   const settle = Number(cmd.settleMs);
-  const settleMs = Number.isFinite(settle) && settle >= 0 ? settle : 2000;
+  const settleMs = Number.isFinite(settle) && settle >= 0 ? settle : 600;
   await new Promise((r) => setTimeout(r, settleMs));
 
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
@@ -1357,9 +1454,12 @@ function startPolling() {
   const generation = pollGeneration;
   polling = true;
   autoPairFailStreak = 0;
-  // Immediate auto-pair + hello so reload does not need a manual Pair click.
+  // Native host (if installed) starts the bridge; then auto-pair + hello.
+  ensureNativeCompanion(true);
   (async () => {
     try {
+      // Give host a moment to spawn bridge.py
+      await new Promise((r) => setTimeout(r, 400));
       await tryAutoPair("start");
       const b = await getBridgeBase();
       await postHello(b);
@@ -1371,6 +1471,11 @@ function startPolling() {
   // Keep service worker eligible for wake-ups (MV3).
   try {
     chrome.alarms.create("hermes-chrome-poll", { periodInMinutes: 1 });
+  } catch {
+    /* ignore */
+  }
+  try {
+    chrome.alarms.create("hermes-chrome-native", { periodInMinutes: 2 });
   } catch {
     /* ignore */
   }
@@ -1390,6 +1495,7 @@ chrome.runtime.onInstalled.addListener(() => startPolling());
 chrome.runtime.onStartup.addListener(() => startPolling());
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "hermes-chrome-poll") startPolling();
+  if (alarm.name === "hermes-chrome-native") ensureNativeCompanion(false);
 });
 startPolling();
 
@@ -1407,8 +1513,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg?.type === "reconnect") {
+    ensureNativeCompanion(true);
     startPolling();
     sendResponse({ ok: true });
+    return false;
+  }
+  if (msg?.type === "ensure_native") {
+    const st = ensureNativeCompanion(true);
+    sendResponse({ ok: true, nativeHost: st });
     return false;
   }
   if (msg?.type === "pair") {

@@ -21,11 +21,13 @@ product boundary.
 ## Validate
 
 ```bash
-./scripts/hermes-chrome.sh install-launchd   # macOS preferred (token + KeepAlive)
-./scripts/hermes-chrome.sh pair-open         # then extension popup → Pair
-./scripts/hermes-chrome.sh bridge-status     # auth:true + extension_connected
-./scripts/hermes-chrome.sh ping              # need extension v1.5.0+ reloaded
-./scripts/hermes-chrome.sh list-tabs         # workspace only
+# Preferred agent-ready path
+./scripts/hermes-chrome.sh install-for-agent   # or Windows: scripts/install-windows.ps1
+./scripts/hermes-chrome.sh bridge-status       # auth:true + extension_connected
+./scripts/hermes-chrome.sh ping                # need extension v1.5.0+ reloaded
+./scripts/hermes-chrome.sh list-tabs           # workspace only
+# MCP smoke (stdio — usually spawned by Grok, not interactive)
+python3 -c "import mcp_server; print(mcp_server.ensure_bridge())"
 # unauth probe must fail:
 curl -sS -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' \
   -d '{"action":"ping"}' http://127.0.0.1:19876/v1/command   # expect 401
@@ -34,9 +36,23 @@ curl -sS -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' \
 ./store/package.sh
 ```
 
+## Agent integration rules
+
+- CWS extension alone **cannot** listen on `:19876`. Ship **Native Messaging host + bridge**.
+- Prefer `install-for-agent` / `install-windows.ps1` (includes native host registration).
+- Host name is fixed: `com.leaf76.hermes_chrome`. CWS extension id:
+  `mkoaoadlkijccmmbkioagnlngbbeocfa` (manifest `key` pins unpacked id).
+- `mcp_server.py` + HTTP bridge are **agent-agnostic** — not Grok-only.
+- `mcp_server.py` / `native_host/host.py` / `lib/bridge_runtime.py` stay **stdlib-only**.
+- Do not claim “install CWS only”; honest UX is “companion once + CWS”.
+- Same-host only: do not invent remote bridge tunneling without explicit scope.
+
 ## Paths
 
 - Repo: this directory (also known historically as hermes-agent-tabgroup)
 - CLI: `scripts/hermes-chrome.sh`
+- Native host: `native_host/host.py` + `scripts/install-native-host.*`
+- MCP: `mcp_server.py`
+- Shared runtime: `lib/bridge_runtime.py`
 - Hermes wrappers: `~/.hermes/scripts/hermes-chrome.sh`
 - Runtime: `~/.hermes/run/hermes-chrome/` (includes `bridge.env` token — chmod 600)
