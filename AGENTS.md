@@ -13,9 +13,12 @@ popup **Setup needed** when companion/bridge is missing.
 **Canonical install:**
 - One-liner: `curl -fsSL …/scripts/install.sh | bash` → `~/.hermes/hermes-chrome`
 - Runtime: `~/.hermes/run/hermes-chrome` · CLI shim: `~/.local/bin/hermes-chrome`
-- MCP: `scripts/install-mcp.py` (Grok + Cursor + Claude Desktop); not npm
+- MCP: `scripts/install-mcp.py` (Grok + Cursor + Claude Desktop)
 - Doctor: `hermes-chrome doctor` / `scripts/doctor.py`
-- Not on npm/PyPI.
+- npm thin shell only: `npx hermes-chrome-companion` (runs GitHub installers; not a Node bridge)
+- Release: tag `v*` → `.github/workflows/release.yml` · see `docs/PACKAGING.md`
+- macOS pkg: `scripts/packaging/build-macos-pkg.sh` · wizard: `macos-install-wizard.command`
+- Not on PyPI.
 
 ## Rules
 

@@ -19,3 +19,8 @@ bridge.log
 
 # Keep store/dist zip out of git by default (rebuild with store/package.sh)
 store/dist/*.zip
+
+# Local packaging outputs
+dist/
+scripts/packaging/_build/
+npm/node_modules/

@@ -76,9 +76,18 @@ This installs:
 3. Optional **MCP** for Grok / Cursor / Claude Desktop when present (`install-mcp.py`)
 4. PATH shim + `doctor` ready-check
 
-Requires **Python 3.9+** and **git** (for the one-liner). Not on npm.
+Requires **Python 3.9+** and **git** (for the one-liner). Not on PyPI.
 
-MCP snippet (any client): `~/.hermes/run/hermes-chrome/mcp-snippet.json`
+Other install channels:
+
+```bash
+npx hermes-chrome-companion          # thin npm wrapper → same install.sh
+# macOS double-click: scripts/packaging/macos-install-wizard.command
+# macOS .pkg: GitHub Releases (tag v*) or ./scripts/packaging/build-macos-pkg.sh
+```
+
+MCP snippet (any client): `~/.hermes/run/hermes-chrome/mcp-snippet.json`  
+Packaging notes: [PACKAGING.md](./PACKAGING.md)
 
 ### 2. Install / enable the extension
 

@@ -1,0 +1,130 @@
+# Build and publish GitHub Release assets when a version tag is pushed.
+#
+# Tag format: v1.8.0  (must match extension/manifest.json version ideally)
+#
+#   git tag v1.8.0
+#   git push origin v1.8.0
+#
+# Assets:
+#   - hermes-chrome-companion-<ver>.tar.gz
+#   - hermes-chrome-extension-v<ver>.zip
+#   - install.sh / install-windows.ps1
+#   - checksums.txt
+#   - hermes-chrome-<ver>.pkg  (macOS, unsigned unless secrets configured)
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v1.8.0); empty = use manifest version only (no GitHub Release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
+          MANIFEST_VER="$(python3 -c "import json; print(json.load(open('extension/manifest.json'))['version'])")"
+          if [[ -n "$TAG" ]]; then
+            VER="${TAG#v}"
+          else
+            VER="$MANIFEST_VER"
+            TAG="v${VER}"
+          fi
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "version=$VER" >>"$GITHUB_OUTPUT"
+          echo "manifest=$MANIFEST_VER" >>"$GITHUB_OUTPUT"
+          echo "Resolved tag=$TAG version=$VER manifest=$MANIFEST_VER"
+          if [[ -n "${{ github.event_name }}" && "${{ github.event_name }}" == "push" && "$VER" != "$MANIFEST_VER" ]]; then
+            echo "::warning::Tag version ($VER) != manifest.json ($MANIFEST_VER). Using tag version for asset names; prefer keeping them equal."
+          fi
+
+      - name: Build release assets
+        run: |
+          set -euo pipefail
+          chmod +x scripts/packaging/build-release-assets.sh scripts/install.sh store/package.sh || true
+          ./scripts/packaging/build-release-assets.sh --version "${{ steps.ver.outputs.version }}"
+
+      - name: Build macOS .pkg (unsigned by default)
+        env:
+          HERMES_CHROME_SIGN_IDENTITY: ${{ secrets.HERMES_CHROME_SIGN_IDENTITY }}
+          HERMES_CHROME_NOTARY_PROFILE: ${{ secrets.HERMES_CHROME_NOTARY_PROFILE }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/packaging/build-macos-pkg.sh || true
+          ./scripts/packaging/build-macos-pkg.sh --version "${{ steps.ver.outputs.version }}"
+          # Copy pkg into release dir if produced
+          PKG="$(ls -1 dist/pkg/hermes-chrome-*.pkg 2>/dev/null | head -1 || true)"
+          if [[ -n "$PKG" && -f "$PKG" ]]; then
+            cp "$PKG" dist/release/
+            (cd dist/release && shasum -a 256 "$(basename "$PKG")" >>checksums.txt)
+            echo "Attached $(basename "$PKG")"
+          else
+            echo "::warning::No .pkg produced"
+          fi
+
+      - name: Upload artifacts (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-chrome-${{ steps.ver.outputs.version }}
+          path: dist/release/*
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Hermes Chrome ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          body: |
+            ## Install (companion — machine half)
+
+            **Not on npm as the runtime** — optional thin helper: `npx hermes-chrome-companion`.
+
+            ### One-liner (macOS / Linux)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
+            ```
+            Or from this release asset `install.sh`.
+
+            ### Windows
+            Download the companion tarball or clone, then:
+            ```powershell
+            powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+            ```
+
+            ### macOS .pkg
+            Open `hermes-chrome-*.pkg` if attached (may be unsigned — right-click → Open).
+
+            ### Extension (browser half)
+            Chrome Web Store **or** load `hermes-chrome-extension-v*.zip` unpacked after unzip.
+
+            See [docs/GUIDE.md](https://github.com/leaf76/hermes-chrome/blob/main/docs/GUIDE.md).
+          files: |
+            dist/release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

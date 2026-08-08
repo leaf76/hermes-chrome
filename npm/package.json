@@ -1,0 +1,37 @@
+{
+  "name": "hermes-chrome-companion",
+  "version": "1.8.0",
+  "description": "Thin installer for Hermes Chrome local companion (bridge + native host). Not the Chrome extension runtime — clones/downloads from GitHub and runs install.sh.",
+  "license": "MIT",
+  "author": "leaf76",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leaf76/hermes-chrome.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/leaf76/hermes-chrome#readme",
+  "bugs": {
+    "url": "https://github.com/leaf76/hermes-chrome/issues"
+  },
+  "keywords": [
+    "hermes",
+    "chrome",
+    "mcp",
+    "agent",
+    "browser",
+    "companion"
+  ],
+  "bin": {
+    "hermes-chrome-companion": "bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node bin/cli.js"
+  }
+}

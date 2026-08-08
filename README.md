@@ -20,18 +20,23 @@ let an extension open a control port. Hermes Chrome is always:
 | **Companion** (machine half) | Local bridge on `127.0.0.1:19876` + Native Messaging host + token | **GitHub + `install.sh`** → `~/.hermes/hermes-chrome` |
 | **Extension** (browser half) | Tab workspace, capture, DOM ops; talks to the bridge | Chrome Web Store or Load unpacked → `extension/` |
 
-**Not on npm / PyPI.** There is no `npx hermes-chrome`. Optional **MCP** ships as
-`mcp_server.py` in the companion install; `install.sh` registers Grok / Cursor /
-Claude Desktop when those apps are present. Not a separate MCP marketplace package.
+**Not on PyPI.** Runtime companion is **not** a Node reimplementation. Optional
+**MCP** ships as `mcp_server.py` in the companion install; installers register
+Grok / Cursor / Claude Desktop when present.
 
 **Ready** means: popup **Connected**, and CLI/MCP can `ping`.
 
 ```bash
-# 1) Companion once per machine (recommended one-liner)
+# 1) Companion once per machine — pick one:
 curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
-# → ~/.hermes/hermes-chrome + ~/.local/bin/hermes-chrome
-# Windows: clone repo, then:
+# or thin npm wrapper (still runs the GitHub installer):
+npx hermes-chrome-companion
+# or macOS: open scripts/packaging/macos-install-wizard.command
+# or macOS .pkg from GitHub Releases (tag v*)
+# Windows:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+
+# → ~/.hermes/hermes-chrome + ~/.local/bin/hermes-chrome
 
 # 2) Install / reload extension (v1.8+) → click icon once → Pair if needed
 
@@ -40,6 +45,9 @@ hermes-chrome --json bridge-status   # extension_connected:true
 hermes-chrome --json ping
 hermes-chrome doctor
 ```
+
+**Maintainers — release:** tag `vX.Y.Z` → GitHub Actions builds tarball, extension
+zip, optional `.pkg`. Details: [docs/PACKAGING.md](docs/PACKAGING.md).
 
 Full walkthrough: [docs/GUIDE.md](docs/GUIDE.md) · [繁中 docs/GUIDE.zh-TW.md](docs/GUIDE.zh-TW.md) ·
 extension popup → **Guide** (offline help).

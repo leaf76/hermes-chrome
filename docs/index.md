@@ -13,6 +13,7 @@ cannot open a control port.
 - **Privacy policy:** [privacy-policy.md](./privacy-policy.md)
 - **Chrome Web Store package:** see repo `store/` after `./store/package.sh`
 - **In-extension guide:** popup → **Guide** (`help.html`)
+- **Packaging / release:** [PACKAGING.md](./PACKAGING.md)
 
 Default agent workspace uses a Chrome Tab Group. Open any `http(s)` URL via CLI/MCP;
 optional product finders are helpers only, not hard-coded limits.
