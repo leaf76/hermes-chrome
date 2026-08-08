@@ -1,7 +1,11 @@
 # Hermes Chrome
 
-Local companion so Hermes / AI agents can operate **your Chrome** on **any website**
+Local agent companion so Hermes / AI agents can operate **your Chrome** on **any website**
 without hijacking the tab you are using.
+
+**Two parts required:** machine **companion** (bridge + Native Messaging host from the
+repo) + browser **extension** (Chrome Web Store or Load unpacked). Extension alone
+cannot open a control port.
 
 - **Repository:** [github.com/leaf76/hermes-chrome](https://github.com/leaf76/hermes-chrome)
 - **User guide (EN):** [GUIDE.md](./GUIDE.md)

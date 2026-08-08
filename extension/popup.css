@@ -23,7 +23,7 @@
 body {
   margin: 0;
   padding: 12px;
-  width: 300px;
+  width: 320px;
   background: var(--bg);
   color: var(--text);
 }
@@ -149,4 +149,103 @@ button.secondary {
 
 code {
   font-size: 10px;
+}
+
+/* Setup required / pair / offline empty-state */
+.setup-card {
+  background: color-mix(in srgb, var(--bad) 12%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.setup-card.setup-warn {
+  background: color-mix(in srgb, var(--warn) 14%, var(--card));
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+}
+
+.setup-card.setup-need {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.setup-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--bad);
+  margin-bottom: 4px;
+}
+
+.setup-card.setup-warn .setup-kicker {
+  color: var(--warn);
+}
+
+.setup-card.setup-need .setup-kicker {
+  color: var(--accent);
+}
+
+.setup-title {
+  font-size: 13px;
+  font-weight: 650;
+  margin: 0 0 6px;
+}
+
+.setup-body {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.setup-cmd {
+  margin: 0 0 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.55);
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.setup-cmd:empty {
+  display: none;
+}
+
+.setup-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.setup-hint:empty {
+  display: none;
+}
+
+.setup-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.setup-actions button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.setup-link {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.setup-link:hover {
+  text-decoration: underline;
 }

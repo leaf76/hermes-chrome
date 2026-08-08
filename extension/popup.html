@@ -10,9 +10,31 @@
       <div class="logo" aria-hidden="true"></div>
       <div>
         <h1>Hermes Chrome</h1>
-        <p class="sub">Agent browser companion</p>
+        <p class="sub">Agent browser companion · two halves</p>
       </div>
     </header>
+
+    <section class="setup-card" id="setupCard" hidden>
+      <div class="setup-kicker" id="setupKicker">Setup required</div>
+      <h2 class="setup-title" id="setupTitle">Companion missing</h2>
+      <p class="setup-body" id="setupBody">
+        This extension is only the browser half. Install the local companion once
+        so agents can talk to Chrome.
+      </p>
+      <pre class="setup-cmd" id="setupCmd"></pre>
+      <p class="setup-hint muted" id="setupHint"></p>
+      <div class="setup-actions">
+        <button id="btnSetupGuide" type="button">Open guide</button>
+        <a
+          id="setupRepo"
+          class="setup-link"
+          href="https://github.com/leaf76/hermes-chrome"
+          target="_blank"
+          rel="noopener"
+          >GitHub</a
+        >
+      </div>
+    </section>
 
     <section class="card" id="statusCard">
       <div class="row">
@@ -54,9 +76,10 @@
 
     <pre id="out" class="mono"></pre>
     <p class="hint">
-      Any website. One-time companion: <code>install-for-agent</code>
-      (Native Host + bridge). Then click icon · Pair.
-      Full guide: <strong>Guide</strong> button or GitHub <code>docs/GUIDE.md</code>.
+      Needs <strong>companion + extension</strong>. One-time:
+      <code>install-for-agent</code> (Native Host + bridge), then click icon · Pair.
+      Not ready? Popup shows <strong>Setup required</strong>. Full guide: <strong>Guide</strong>
+      or GitHub <code>docs/GUIDE.md</code>.
     </p>
     <script src="popup.js"></script>
   </body>

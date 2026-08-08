@@ -75,9 +75,11 @@
   <body>
     <h1 style="font-size: 16px; margin: 0 0 4px">Hermes Chrome</h1>
     <p class="hint">
-      Local companion for <strong>any website</strong> — agents open, capture, and
-      automate pages without hijacking your active tab. Talks only to a bridge on
-      this machine (default port 19876). No cloud account. No analytics.
+      <strong>Two halves:</strong> this Options page is the browser half. Agents need
+      the local <strong>companion</strong> (bridge + Native Messaging host) installed
+      once from GitHub — extension alone is not enough. Works on
+      <strong>any website</strong>; talks only to a bridge on this machine (default
+      port 19876). No cloud account. No analytics.
       <a href="help.html" target="_blank" rel="noopener">Open setup guide</a>
       ·
       <a
@@ -88,9 +90,11 @@
       >.
     </p>
     <div class="warn">
-      The bridge requires a shared token by default. Use <strong>Pair with
-      bridge</strong> within a few minutes of bridge start, or paste the token
-      from <code>~/.hermes/run/hermes-chrome/bridge.env</code>.
+      If the popup shows <strong>Setup required</strong>, install the companion first
+      (<code>install-for-agent</code> / Windows installer). The bridge requires a
+      shared token by default — use <strong>Pair with bridge</strong> within a few
+      minutes of bridge start, or paste the token from
+      <code>~/.hermes/run/hermes-chrome/bridge.env</code>.
     </div>
 
     <label for="bridgeUrl">Local bridge URL</label>

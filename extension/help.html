@@ -139,14 +139,22 @@
         </p>
 
         <div class="card">
+          <strong>You need two parts.</strong> The Chrome Web Store package is only the
+          <em>browser half</em>. Agents also need the <em>machine half</em> (local companion:
+          bridge on <code>127.0.0.1:19876</code> + Native Messaging host + token). Extension
+          alone cannot control Chrome for agents — if the popup says
+          <strong>Setup required</strong>, that is expected until companion install succeeds.
+        </div>
+
+        <div class="card">
           <strong>Works on any page.</strong> Open GitHub, docs, dashboards, news — whatever URL you pass.
           Optional chart helpers exist but are not required.
         </div>
 
-        <h2>1. One-time companion install</h2>
+        <h2>1. One-time companion install (do this first)</h2>
         <p>
           The Chrome extension alone cannot open a control port (Chrome security). Install the companion
-          once per machine:
+          once per machine <strong>before</strong> expecting Bridge online:
         </p>
         <pre>./scripts/hermes-chrome.sh install-for-agent
 # Windows:
@@ -210,12 +218,18 @@ hermes-chrome.sh --json ping</pre>
         <p class="muted">本機 agent companion，<strong>適用任何網站</strong>——不綁死單一產品或網域。</p>
 
         <div class="card">
+          <strong>需要兩半。</strong> 商店安裝的只是<em>瀏覽器端</em>。Agent 還需要<em>本機端 companion</em>
+          （bridge <code>127.0.0.1:19876</code> + Native Messaging host + token）。
+          <strong>光裝 extension 不夠</strong>——popup 顯示 <strong>Setup required</strong> 時，代表還沒完成 companion 安裝，這是預期行為。
+        </div>
+
+        <div class="card">
           <strong>任何頁面都能用。</strong> GitHub、文件、後台、新聞……你開什麼 URL 就操作什麼。
           圖表小工具是可選，不是主線。
         </div>
 
-        <h2>1. 一次安裝 companion</h2>
-        <p>光裝 extension 不能開控制 port（Chrome 安全模型）。每台電腦裝一次 companion：</p>
+        <h2>1. 一次安裝 companion（先做這步）</h2>
+        <p>光裝 extension 不能開控制 port（Chrome 安全模型）。每台電腦<strong>先</strong>裝一次 companion，再期待 Bridge online：</p>
         <pre>./scripts/hermes-chrome.sh install-for-agent
 # Windows:
 # powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1</pre>

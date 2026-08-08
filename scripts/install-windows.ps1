@@ -255,10 +255,15 @@ if (Test-Path $nm) {
 if (-not $SkipGrok) { Install-GrokMcp -PythonExe $py }
 
 Write-Host ""
-Write-Host "=== Next (Chrome extension — CWS or Load unpacked) ===" -ForegroundColor Cyan
-Write-Host "1. Install/enable Hermes Chrome v1.7+ (nativeMessaging permission)"
+Write-Host "=== Companion (machine half) installed ===" -ForegroundColor Cyan
+Write-Host "This was step 1 of 2. Extension alone is never enough."
+Write-Host ""
+Write-Host "=== Next: browser half (extension v1.7.1+ — CWS or Load unpacked) ===" -ForegroundColor Cyan
+Write-Host "1. Install/enable Hermes Chrome (nativeMessaging permission)"
 Write-Host "2. Reload extension → click icon once (native host starts bridge)"
 Write-Host "3. Wait for auto-pair, or click Pair"
+Write-Host "   Ready: Bridge online + Auth ready"
+Write-Host "   If popup shows Setup required, companion/host is still missing — re-run this script"
 Write-Host "4. Optional: Options → allow cross-workspace (tabs outside Hermes group)"
 Write-Host "5. Restart any MCP agent (Grok/Cursor/Claude) to load hermes_chrome_* tools"
 Write-Host ""

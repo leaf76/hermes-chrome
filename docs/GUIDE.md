@@ -1,10 +1,25 @@
 # Hermes Chrome — User Guide
 
-**Works on any website.** Hermes Chrome is a local companion so AI agents and CLIs can operate **your daily Chrome** (open pages, list tabs, capture, light DOM ops) without stealing focus from the tab you are using.
+**Works on any website.** Hermes Chrome is a local agent companion so AI agents and CLIs can operate **your daily Chrome** (open pages, list tabs, capture, light DOM ops) without stealing focus from the tab you are using.
 
 - Repository: [github.com/leaf76/hermes-chrome](https://github.com/leaf76/hermes-chrome)
 - Privacy: [privacy-policy.md](./privacy-policy.md)
 - 繁中版: [GUIDE.zh-TW.md](./GUIDE.zh-TW.md)
+
+---
+
+## You need two parts
+
+**Installing the Chrome extension from the Web Store is not enough.**
+
+| Half | Role |
+|------|------|
+| **Companion** (machine) | Local bridge `127.0.0.1:19876` + Native Messaging host + token — install once from this repo |
+| **Extension** (browser) | Workspace tabs, capture, light DOM — talks only to the local bridge |
+
+**Ready** = popup shows Bridge **online** + Auth **ready**, and `hermes-chrome.sh --json ping` succeeds.
+
+If the popup shows **Setup required**, the companion is missing or the bridge is down — follow the command in the popup (or section 1 below). That is expected when only the store package is installed.
 
 ---
 
@@ -15,14 +30,15 @@
 | A **local** bridge + Chrome extension for agents | A cloud browser / remote VPS browser |
 | **Site-agnostic** — any `http(s)` URL you open | Hard-wired to one product or one website |
 | Shared by **CLI, Grok, Cursor, Claude Desktop**, … | Grok-only |
+| A **two-half** product (companion + extension) | An extension-only install that works out of the box |
 
-Chrome security means the **extension alone** cannot expose a control port. Install the **companion once** (Native Messaging host + local bridge). After that, clicking the extension icon keeps the bridge available.
+Chrome security means the **extension alone** cannot expose a control port. Install the **companion first** (Native Messaging host + local bridge). After that, clicking the extension icon keeps the bridge available.
 
 ---
 
 ## One-time setup
 
-### 1. Install the companion (once per machine)
+### 1. Install the companion (once per machine) — do this first
 
 ```bash
 # macOS / Linux (from a clone of this repo)

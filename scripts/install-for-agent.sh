@@ -139,12 +139,17 @@ fi
 
 cat <<EOF
 
-=== Next (Chrome extension v1.7+) ===
+=== Companion (machine half) installed ===
+This was step 1 of 2. Extension alone is never enough.
+
+=== Next: browser half (extension v1.7.1+) ===
 1. Install/enable Hermes Chrome (CWS or Load unpacked: ${ROOT}/extension)
    - Accept nativeMessaging if prompted
 2. Reload extension → click icon once
    - Native host should auto-start the bridge on :19876
 3. Wait for auto-pair (or popup → Pair)
+   - Ready: Bridge online + Auth ready
+   - If popup shows "Setup required", companion/host is still missing — re-run this script
 4. Optional: Options → allow ops outside Hermes workspace (tabs not in the group)
 5. Restart MCP agents (Grok / Cursor / Claude Desktop) for hermes_chrome_* tools
    CLI users: no MCP needed — use ${CLI}
@@ -156,4 +161,6 @@ Smoke:
 
 MCP entrypoint (any MCP client — not Grok-only):
   ${PYTHON3} ${MCP_PY}
+
+Docs: ${ROOT}/docs/GUIDE.md · popup → Guide
 EOF

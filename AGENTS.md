@@ -6,6 +6,10 @@ Chrome companion for Hermes / local agents: operate the **user daily Chrome**
 safely (workspace isolation, CLI bridge). Tab Groups are a feature, not the
 product boundary.
 
+**Two halves:** machine **companion** (bridge + native host + token) + browser
+**extension**. Never claim CWS-only install is enough. UX copy: companion first;
+popup **Setup required** when companion/bridge is missing.
+
 ## Rules
 
 - Prefer agent-friendly Chrome ops that do **not** hijack the user's active tab.

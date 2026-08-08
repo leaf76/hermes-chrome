@@ -1,10 +1,25 @@
 # Hermes Chrome — 使用教學
 
-**適用任何網站。** Hermes Chrome 是本機 companion，讓 AI agent / CLI 操作**你日常的 Chrome**（開頁、列分頁、截圖、簡單 DOM），盡量不搶你正在看的分頁焦點。
+**適用任何網站。** Hermes Chrome 是本機 agent companion，讓 AI agent / CLI 操作**你日常的 Chrome**（開頁、列分頁、截圖、簡單 DOM），盡量不搶你正在看的分頁焦點。
 
 - 倉庫：[github.com/leaf76/hermes-chrome](https://github.com/leaf76/hermes-chrome)
 - 隱私：[privacy-policy.md](./privacy-policy.md)
 - English: [GUIDE.md](./GUIDE.md)
+
+---
+
+## 需要兩半
+
+**只從 Chrome 線上應用程式商店安裝 extension 不夠。**
+
+| 半邊 | 角色 |
+|------|------|
+| **Companion**（本機端） | 本機 bridge `127.0.0.1:19876` + Native Messaging host + token — 從此 repo **一次**安裝 |
+| **Extension**（瀏覽器端） | 工作區分頁、截圖、輕量 DOM — 只跟本機 bridge 通訊 |
+
+**就緒** = popup 顯示 Bridge **online** + Auth **ready**，且 `hermes-chrome.sh --json ping` 成功。
+
+若 popup 顯示 **Setup required**，代表還沒裝 companion 或 bridge 沒起來 — 照 popup 上的指令（或下方第 1 步）即可。**只裝商店版時出現這個畫面是正常的。**
 
 ---
 
@@ -15,14 +30,15 @@
 | **本機** bridge + Chrome extension | 雲端瀏覽器 / 遠端 VPS 瀏覽器 |
 | **不綁站點** — 任何你開的 `http(s)` | 寫死某一個產品或某一個網站 |
 | CLI、Grok、Cursor、Claude Desktop… **共用** | 只給 Grok 用 |
+| **兩半**產品（companion + extension） | 只裝 extension 就能用 |
 
-Chrome 安全限制：光裝 extension **不能**對外開控制 port。需要**一次**安裝 companion（Native Messaging host + 本機 bridge）。之後點 extension icon 就會維持 bridge 可用。
+Chrome 安全限制：光裝 extension **不能**對外開控制 port。請**先**安裝 companion（Native Messaging host + 本機 bridge）。之後點 extension icon 就會維持 bridge 可用。
 
 ---
 
 ## 一次設定
 
-### 1. 安裝 companion（每台機器一次）
+### 1. 安裝 companion（每台機器一次）— 先做這步
 
 ```bash
 # macOS / Linux

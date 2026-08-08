@@ -2,7 +2,7 @@
 
 **Repo:** https://github.com/leaf76/hermes-chrome  
 
-Local companion that makes **Chrome easy for any local AI agent to operate**—open
+Local agent companion that makes **Chrome easy for any local AI agent to operate**—open
 **any website**, capture, list tabs, light DOM—without hijacking the tab you are using.
 
 **Not locked to one site or product.** GitHub, docs, dashboards, news, charts… if
@@ -10,7 +10,32 @@ Chrome can open the URL, Hermes Chrome can drive that tab.
 
 Tab Groups are one isolation tool, not the whole product.
 
-**Guides:** [docs/GUIDE.md](docs/GUIDE.md) · [繁中 docs/GUIDE.zh-TW.md](docs/GUIDE.zh-TW.md) · extension popup → **Guide**
+## You need two parts (read this first)
+
+**Installing the Chrome extension alone is not enough.** Chrome security does not
+let an extension open a control port. Hermes Chrome is always:
+
+| Half | What | Where |
+|------|------|--------|
+| **Companion** (machine half) | Local bridge on `127.0.0.1:19876` + Native Messaging host + token | This repo: `install-for-agent` / Windows installer |
+| **Extension** (browser half) | Tab workspace, capture, DOM ops; talks to the bridge | Chrome Web Store or Load unpacked → `extension/` |
+
+**Ready** means: Bridge **online** + Auth **ready** (popup), and CLI/MCP can `ping`.
+
+```bash
+# 1) Companion once per machine (macOS / Linux)
+./scripts/hermes-chrome.sh install-for-agent
+# Windows: powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+
+# 2) Install / reload extension (v1.7+) → click icon once → Pair if needed
+
+# 3) Smoke
+./scripts/hermes-chrome.sh --json bridge-status   # extension_connected:true
+./scripts/hermes-chrome.sh --json ping
+```
+
+Full walkthrough: [docs/GUIDE.md](docs/GUIDE.md) · [繁中 docs/GUIDE.zh-TW.md](docs/GUIDE.zh-TW.md) ·
+extension popup → **Guide** (offline help).
 
 **Privacy policy (Chrome Web Store):**  
 https://leaf76.github.io/hermes-chrome/privacy-policy  
@@ -70,21 +95,22 @@ https://leaf76.github.io/hermes-chrome/privacy-policy
 
 Runtime pid/log: `~/.hermes/run/hermes-chrome/` (not in git).
 
-## Quick start (agent-ready — recommended)
+## Quick start (companion first, then extension)
 
-**Chrome Web Store alone cannot run a local control plane** (Chrome security).
-Install the **companion once**, then the extension auto-starts the bridge via
-**Native Messaging**. Works for **any** agent (CLI, Grok, Cursor, Claude Desktop…).
+Order matters: **companion → extension → pair → smoke**. Chrome Web Store alone
+cannot run a local control plane. After companion install, the extension can
+auto-start the bridge via **Native Messaging**. Works for **any** agent (CLI,
+Grok, Cursor, Claude Desktop…).
 
 ```bash
-# macOS / Linux
+# macOS / Linux — companion (once per machine)
 ./scripts/hermes-chrome.sh install-for-agent
 
 # Windows (PowerShell)
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
-What that does:
+What the companion install does:
 
 1. Starts the bridge + **autostart** (launchd / Windows Scheduled Task)
 2. Registers **Chrome Native Messaging host** `com.leaf76.hermes_chrome`
@@ -93,11 +119,12 @@ What that does:
 4. Optionally registers **stdio MCP** (`mcp_server.py`) for Grok if `~/.grok` exists  
    (same MCP file works for Cursor / Claude Desktop — point their config at it)
 
-Then:
+Then the browser half:
 
 1. Install/enable **Hermes Chrome v1.7+** (CWS or Load unpacked → `./extension`)
 2. Accept **nativeMessaging** if prompted → **Reload** → click icon once
-3. Wait for auto-pair (or popup → Pair)
+3. Wait for auto-pair (or popup → **Pair**). If Bridge is offline, popup shows
+   **Setup required** with the companion command — not a broken install alone.
 4. **CLI users:** done — `hermes-chrome.sh --json ping`  
    **MCP users:** restart agent session so `hermes_chrome_*` tools load
 5. Smoke: `hermes_chrome_status` / `capture` (MCP) or CLI equivalents
