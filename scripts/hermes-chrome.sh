@@ -49,7 +49,15 @@
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks so PATH shim (~/.local/bin/hermes-chrome) still finds scripts/doctor.py
+_hc_src="${BASH_SOURCE[0]}"
+while [[ -L "$_hc_src" ]]; do
+  _hc_dir="$(cd "$(dirname "$_hc_src")" && pwd)"
+  _hc_src="$(readlink "$_hc_src")"
+  [[ "$_hc_src" != /* ]] && _hc_src="${_hc_dir}/${_hc_src}"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_hc_src")" && pwd)"
+unset _hc_src _hc_dir
 ROOT="${HERMES_CHROME_ROOT:-${HERMES_DAILY_CHROME_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}}"
 RUN_DIR="${HERMES_CHROME_RUN:-${HERMES_DAILY_CHROME_RUN:-$HOME/.hermes/run/hermes-chrome}}"
 BRIDGE_PY="${ROOT}/bridge.py"
