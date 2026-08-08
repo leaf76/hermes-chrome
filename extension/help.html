@@ -143,7 +143,24 @@
           <em>browser half</em>. Agents also need the <em>machine half</em> (local companion:
           bridge on <code>127.0.0.1:19876</code> + Native Messaging host + token). Extension
           alone cannot control Chrome for agents — if the popup says
-          <strong>Setup required</strong>, that is expected until companion install succeeds.
+          <strong>Setup needed</strong>, that is expected until companion install succeeds.
+        </div>
+
+        <div class="card">
+          <strong>Where to install the companion</strong>
+          <ul>
+            <li><strong>One-liner (recommended):</strong>
+              <code>curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash</code>
+            </li>
+            <li><strong>Installs to:</strong> <code>~/.hermes/hermes-chrome</code> (code) +
+              <code>~/.hermes/run/hermes-chrome</code> (token / logs) · CLI:
+              <code>~/.local/bin/hermes-chrome</code></li>
+            <li><strong>Not on npm</strong> — there is no <code>npx</code> package.</li>
+            <li><strong>MCP (optional):</strong> same install registers Grok / Cursor / Claude Desktop when present.
+              Server file: <code>mcp_server.py</code> under the install root. Snippet:
+              <code>~/.hermes/run/hermes-chrome/mcp-snippet.json</code></li>
+            <li>Windows: clone the repo → <code>.\scripts\install-windows.ps1</code></li>
+          </ul>
         </div>
 
         <div class="card">
@@ -154,12 +171,18 @@
         <h2>1. One-time companion install (do this first)</h2>
         <p>
           The Chrome extension alone cannot open a control port (Chrome security). Install the companion
-          once per machine <strong>before</strong> expecting Bridge online:
+          once per machine <strong>before</strong> expecting Connected:
         </p>
-        <pre>./scripts/hermes-chrome.sh install-for-agent
-# Windows:
+        <pre># macOS / Linux (recommended)
+curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
+
+# From a clone:
+# ./scripts/install.sh
+# ./scripts/install.sh --dev   # use this clone in-place
+
+# Windows PowerShell (from a clone):
 # powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1</pre>
-        <p class="muted">Needs real Python 3. Installs bridge + Native Messaging host + optional MCP.</p>
+        <p class="muted">Needs Python 3.9+ and git. Installs bridge + Native Host + optional multi-client MCP.</p>
 
         <h2>2. Enable this extension</h2>
         <ol>
@@ -220,7 +243,23 @@ hermes-chrome.sh --json ping</pre>
         <div class="card">
           <strong>需要兩半。</strong> 商店安裝的只是<em>瀏覽器端</em>。Agent 還需要<em>本機端 companion</em>
           （bridge <code>127.0.0.1:19876</code> + Native Messaging host + token）。
-          <strong>光裝 extension 不夠</strong>——popup 顯示 <strong>Setup required</strong> 時，代表還沒完成 companion 安裝，這是預期行為。
+          <strong>光裝 extension 不夠</strong>——popup 顯示 <strong>Setup needed</strong> 時，代表還沒完成 companion 安裝，這是預期行為。
+        </div>
+
+        <div class="card">
+          <strong>Companion 從哪裡裝？</strong>
+          <ul>
+            <li><strong>建議一行指令：</strong>
+              <code>curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash</code>
+            </li>
+            <li><strong>安裝位置：</strong> <code>~/.hermes/hermes-chrome</code> +
+              runtime <code>~/.hermes/run/hermes-chrome</code> · CLI：
+              <code>hermes-chrome</code></li>
+            <li><strong>沒有 npm</strong>——不能 <code>npx</code>。</li>
+            <li><strong>MCP（可選）：</strong> 同一安裝會註冊 Grok / Cursor / Claude Desktop（若有）。
+              檔案是 install root 裡的 <code>mcp_server.py</code>，不是 MCP 商店套件。</li>
+            <li>Windows：clone repo 後跑 <code>.\scripts\install-windows.ps1</code></li>
+          </ul>
         </div>
 
         <div class="card">
@@ -229,11 +268,16 @@ hermes-chrome.sh --json ping</pre>
         </div>
 
         <h2>1. 一次安裝 companion（先做這步）</h2>
-        <p>光裝 extension 不能開控制 port（Chrome 安全模型）。每台電腦<strong>先</strong>裝一次 companion，再期待 Bridge online：</p>
-        <pre>./scripts/hermes-chrome.sh install-for-agent
-# Windows:
+        <p>光裝 extension 不能開控制 port（Chrome 安全模型）。每台電腦<strong>先</strong>裝一次 companion，再期待 Connected：</p>
+        <pre># macOS / Linux（建議）
+curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
+
+# 從 clone：
+# ./scripts/install.sh
+
+# Windows（在 clone 目錄）：
 # powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1</pre>
-        <p class="muted">需要真的 Python 3。會裝 bridge + Native Messaging host + 可選 MCP。</p>
+        <p class="muted">需要 Python 3.9+ 與 git。會裝 bridge + Native Host + 可選多 client MCP。</p>
 
         <h2>2. 啟用這個 extension</h2>
         <ol>

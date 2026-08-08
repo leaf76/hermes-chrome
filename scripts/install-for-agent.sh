@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# One-shot: bridge autostart + MCP registration for Grok / Cursor-style agents.
+# One-shot: bridge autostart + Native Messaging host (+ optional MCP via install-mcp.py).
 #
-# Usage:
-#   ./scripts/install-for-agent.sh              # bridge + try Grok MCP
-#   ./scripts/install-for-agent.sh --skip-grok
+# Prefer the full product installer (fixed root + PATH + multi-client MCP):
+#   curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
+#
+# Usage (from any clone or ~/.hermes/hermes-chrome):
+#   ./scripts/install-for-agent.sh
+#   ./scripts/install-for-agent.sh --skip-mcp
 #   ./scripts/install-for-agent.sh --uninstall
 #
-# Windows: prefer scripts/install-windows.ps1 (this script will redirect if uname is MINGW/MSYS).
+# Windows: prefer scripts/install-windows.ps1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CLI="${SCRIPT_DIR}/hermes-chrome.sh"
 MCP_PY="${ROOT}/mcp_server.py"
+MCP_INSTALLER="${SCRIPT_DIR}/install-mcp.py"
 RUN_DIR="${HERMES_CHROME_RUN:-$HOME/.hermes/run/hermes-chrome}"
-GROK_CONFIG="${GROK_CONFIG:-$HOME/.grok/config.toml}"
-SKIP_GROK=0
+SKIP_MCP=0
 UNINSTALL=0
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -23,10 +26,10 @@ log() { echo "[hermes-chrome] $*"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --skip-grok) SKIP_GROK=1; shift ;;
+    --skip-mcp|--skip-grok) SKIP_MCP=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help)
-      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) die "unknown arg: $1" ;;
@@ -37,24 +40,36 @@ done
 uname_s="$(uname -s 2>/dev/null || echo unknown)"
 if [[ "$uname_s" == MINGW* || "$uname_s" == MSYS* || "$uname_s" == CYGWIN* ]]; then
   log "Windows detected — handing off to install-windows.ps1"
-  ps_args=@("-ExecutionPolicy", "Bypass", "-File", "${SCRIPT_DIR}/install-windows.ps1")
-  [[ "$SKIP_GROK" == "1" ]] && ps_args+=("-SkipGrok")
+  ps_args=("-ExecutionPolicy" "Bypass" "-File" "${SCRIPT_DIR}/install-windows.ps1")
+  [[ "$SKIP_MCP" == "1" ]] && ps_args+=("-SkipGrok")
   [[ "$UNINSTALL" == "1" ]] && ps_args+=("-Uninstall")
   exec powershell.exe "${ps_args[@]}"
 fi
+
+export HERMES_CHROME_ROOT="${HERMES_CHROME_ROOT:-$ROOT}"
+export HERMES_CHROME_RUN="$RUN_DIR"
 
 [[ -f "$MCP_PY" ]] || die "missing $MCP_PY"
 [[ -f "$CLI" ]] || die "missing $CLI"
 PYTHON3="$(command -v python3 || command -v python || true)"
 [[ -n "$PYTHON3" ]] || die "python3 not found"
+# Reject ancient python
+"$PYTHON3" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
+  || die "Python 3.9+ required"
 
 if [[ "$UNINSTALL" == "1" ]]; then
   if [[ "$uname_s" == "Darwin" ]]; then
     bash "${SCRIPT_DIR}/install-launchd.sh" uninstall || true
   fi
   "$CLI" bridge-stop >/dev/null 2>&1 || true
-  log "bridge stopped / launchd uninstalled (if present)"
-  log "Grok MCP entry left in place; remove [mcp_servers.hermes-chrome] manually if desired"
+  if [[ -f "${SCRIPT_DIR}/install-native-host.sh" ]]; then
+    bash "${SCRIPT_DIR}/install-native-host.sh" uninstall || true
+  fi
+  if [[ -f "$MCP_INSTALLER" ]]; then
+    "$PYTHON3" "$MCP_INSTALLER" --root "$ROOT" --uninstall || true
+  fi
+  log "bridge stopped / launchd / native host cleaned (if present)"
+  log "MCP auto entries removed where install-mcp managed them"
   exit 0
 fi
 
@@ -76,91 +91,55 @@ fi
 "$CLI" pair-open || true
 "$CLI" bridge-status || true
 
-# --- Grok MCP ---
-install_grok_mcp() {
-  local block conf dir
-  conf="$GROK_CONFIG"
-  dir="$(dirname "$conf")"
-  if [[ ! -d "$dir" ]]; then
-    log "no ~/.grok — skip Grok MCP (install Grok Build, re-run this script)"
-    return 0
-  fi
-  mkdir -p "$dir"
-  block=$(
-    cat <<EOF
+# --- Multi-client MCP ---
+if [[ "$SKIP_MCP" != "1" && -f "$MCP_INSTALLER" ]]; then
+  log "registering MCP for Grok / Cursor / Claude Desktop (when present)…"
+  "$PYTHON3" "$MCP_INSTALLER" --root "$ROOT" --python "$PYTHON3" || log "MCP register partial"
+elif [[ "$SKIP_MCP" == "1" ]]; then
+  log "skip MCP registration (--skip-mcp)"
+fi
 
-# --- hermes-chrome (auto by scripts/install-for-agent.sh) ---
-[mcp_servers.hermes-chrome]
-command = "${PYTHON3}"
-args = ["${MCP_PY}"]
-enabled = true
-startup_timeout_sec = 45
-tool_timeout_sec = 120
-
-[mcp_servers.hermes-chrome.env]
-HERMES_CHROME_ROOT = "${ROOT}"
-# --- end hermes-chrome ---
-EOF
-  )
-  if [[ -f "$conf" ]] && grep -q '\[mcp_servers\.hermes-chrome\]' "$conf"; then
-    if grep -q 'auto by scripts/install-for-agent.sh' "$conf" || grep -q 'auto by scripts/install-windows.ps1' "$conf"; then
-      # strip previous auto block
-      python3 - <<'PY' "$conf"
-from pathlib import Path
-import re, sys
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-text2 = re.sub(
-    r"\n# --- hermes-chrome \(auto by scripts/install-(?:for-agent\.sh|windows\.ps1)\) ---.*?# --- end hermes-chrome ---\n?",
-    "\n",
-    text,
-    flags=re.S,
-)
-path.write_text(text2.rstrip() + "\n", encoding="utf-8")
-PY
-    else:
-      log "Grok config already has [mcp_servers.hermes-chrome] — not overwriting custom entry"
-      return 0
-    fi
+# Optional PATH shim when not using install.sh
+BIN_DIR="${HERMES_CHROME_BIN:-$HOME/.local/bin}"
+if [[ -w "$(dirname "$BIN_DIR")" || -d "$BIN_DIR" ]]; then
+  mkdir -p "$BIN_DIR" 2>/dev/null || true
+  if [[ -d "$BIN_DIR" ]]; then
+    ln -sfn "$CLI" "${BIN_DIR}/hermes-chrome" 2>/dev/null \
+      && log "PATH shim: ${BIN_DIR}/hermes-chrome" || true
   fi
-  if [[ ! -f "$conf" ]]; then
-    printf '%s\n' "$block" | sed '1d' >"$conf"
-  else
-    printf '%s\n' "$(cat "$conf")" "$block" >"${conf}.tmp"
-    mv "${conf}.tmp" "$conf"
-  fi
-  log "Grok MCP registered in $conf"
-  log "Restart Grok Build session to load hermes-chrome tools"
-}
-
-if [[ "$SKIP_GROK" != "1" ]]; then
-  install_grok_mcp
 fi
 
 cat <<EOF
 
 === Companion (machine half) installed ===
-This was step 1 of 2. Extension alone is never enough.
+Root:     ${ROOT}
+Runtime:  ${RUN_DIR}
+CLI:      ${CLI}
+MCP:      ${MCP_PY}
 
-=== Next: browser half (extension v1.7.1+) ===
-1. Install/enable Hermes Chrome (CWS or Load unpacked: ${ROOT}/extension)
+This was step 1 of 2. Extension alone is never enough.
+Not on npm — companion is this tree (or ~/.hermes/hermes-chrome via install.sh).
+
+=== Next: browser half (extension v1.7+) ===
+1. Install/enable Hermes Chrome
+   - Chrome Web Store, or Load unpacked: ${ROOT}/extension
    - Accept nativeMessaging if prompted
 2. Reload extension → click icon once
-   - Native host should auto-start the bridge on :19876
 3. Wait for auto-pair (or popup → Pair)
-   - Ready: Bridge online + Auth ready
-   - If popup shows "Setup required", companion/host is still missing — re-run this script
-4. Optional: Options → allow ops outside Hermes workspace (tabs not in the group)
-5. Restart MCP agents (Grok / Cursor / Claude Desktop) for hermes_chrome_* tools
-   CLI users: no MCP needed — use ${CLI}
+   - Ready: popup says Connected
+4. Restart MCP agents (Grok / Cursor / Claude Desktop) if you use tools
+   CLI users: no MCP needed
 
 Smoke:
   ${CLI} --json bridge-status
   ${CLI} --json ping
-  ${CLI} capture --prefer active --out /tmp/hermes-chrome-smoke.png
+  ${PYTHON3} ${SCRIPT_DIR}/doctor.py
 
-MCP entrypoint (any MCP client — not Grok-only):
-  ${PYTHON3} ${MCP_PY}
+MCP snippet (any client):
+  ${RUN_DIR}/mcp-snippet.json
+
+Full one-liner install (fixed root):
+  curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
 
 Docs: ${ROOT}/docs/GUIDE.md · popup → Guide
 EOF

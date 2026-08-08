@@ -40,11 +40,31 @@ Chrome 安全限制：光裝 extension **不能**對外開控制 port。請**先
 
 ### 1. 安裝 companion（每台機器一次）— 先做這步
 
+**建議（不必先 clone）：**
+
 ```bash
 # macOS / Linux
-./scripts/hermes-chrome.sh install-for-agent
+curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
+```
 
-# Windows PowerShell
+安裝位置：
+
+| 路徑 | 用途 |
+|------|------|
+| `~/.hermes/hermes-chrome` | 程式（bridge、MCP、scripts、extension/） |
+| `~/.hermes/run/hermes-chrome` | 執行期（token、pid、native host） |
+| `~/.local/bin/hermes-chrome` | CLI |
+
+**已有 git clone：**
+
+```bash
+./scripts/install.sh
+./scripts/install.sh --dev   # 直接用這個 clone
+```
+
+**Windows PowerShell**（在 clone 目錄）：
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
@@ -52,9 +72,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 
 1. 本機 bridge `127.0.0.1:19876`（盡量登入自啟）
 2. Chrome **Native Messaging** host：`com.leaf76.hermes_chrome`
-3. 若偵測到 agent 設定目錄，可選註冊 MCP（例如 Grok）
+3. 可選 **MCP**（Grok / Cursor / Claude Desktop 有裝才寫設定）
+4. PATH shim + `doctor` 健康檢查
 
-需要系統上有真的 **Python 3**（不要用 Windows Store 假 python）。
+需要 **Python 3.9+** 與 **git**。沒有 npm。
+
+MCP 片段：`~/.hermes/run/hermes-chrome/mcp-snippet.json`
 
 ### 2. 安裝 / 啟用 extension
 

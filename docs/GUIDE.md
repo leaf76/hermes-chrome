@@ -40,11 +40,32 @@ Chrome security means the **extension alone** cannot expose a control port. Inst
 
 ### 1. Install the companion (once per machine) — do this first
 
-```bash
-# macOS / Linux (from a clone of this repo)
-./scripts/hermes-chrome.sh install-for-agent
+**Recommended (no prior clone):**
 
-# Windows PowerShell
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
+```
+
+Installs to:
+
+| Path | Purpose |
+|------|---------|
+| `~/.hermes/hermes-chrome` | Code (bridge, MCP, scripts, extension/) |
+| `~/.hermes/run/hermes-chrome` | Runtime (token, pid, native host wrapper) |
+| `~/.local/bin/hermes-chrome` | CLI PATH shim |
+
+**From a git clone:**
+
+```bash
+./scripts/install.sh              # sync into ~/.hermes/hermes-chrome
+./scripts/install.sh --dev        # use this clone in-place
+# or: ./scripts/hermes-chrome.sh install-for-agent
+```
+
+**Windows PowerShell** (from a clone):
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
@@ -52,9 +73,12 @@ This installs:
 
 1. Local bridge on `127.0.0.1:19876` (login autostart when possible)
 2. Chrome **Native Messaging** host `com.leaf76.hermes_chrome`
-3. Optional MCP registration (e.g. Grok) when an agent config folder exists
+3. Optional **MCP** for Grok / Cursor / Claude Desktop when present (`install-mcp.py`)
+4. PATH shim + `doctor` ready-check
 
-Requires a real **Python 3** on `PATH` (not the Windows Store stub).
+Requires **Python 3.9+** and **git** (for the one-liner). Not on npm.
+
+MCP snippet (any client): `~/.hermes/run/hermes-chrome/mcp-snippet.json`
 
 ### 2. Install / enable the extension
 

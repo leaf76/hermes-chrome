@@ -8,79 +8,160 @@
   <body>
     <header>
       <div class="logo" aria-hidden="true"></div>
-      <div>
+      <div class="header-text">
         <h1>Hermes Chrome</h1>
-        <p class="sub">Agent browser companion · two halves</p>
+        <p class="sub">Local agent companion for Chrome</p>
       </div>
     </header>
 
-    <section class="setup-card" id="setupCard" hidden>
-      <div class="setup-kicker" id="setupKicker">Setup required</div>
-      <h2 class="setup-title" id="setupTitle">Companion missing</h2>
-      <p class="setup-body" id="setupBody">
-        This extension is only the browser half. Install the local companion once
-        so agents can talk to Chrome.
+    <!-- User-facing summary (always) -->
+    <section class="summary-card" id="summaryCard" aria-live="polite">
+      <div class="summary-row">
+        <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+        <div class="summary-text">
+          <p class="summary-title" id="summaryTitle">Checking…</p>
+          <p class="summary-desc muted" id="summaryDesc"></p>
+        </div>
+      </div>
+      <div class="meta-row" id="metaRow" hidden>
+        <span class="meta-chip" id="metaWorkspace"></span>
+        <span class="meta-chip muted" id="metaLast"></span>
+      </div>
+    </section>
+
+    <!-- Setup / install (only when not ready) -->
+    <section class="setup-panel" id="setupPanel" hidden>
+      <h2 class="setup-heading" id="setupHeading">Install the local companion</h2>
+      <p class="setup-lead" id="setupLead">
+        The store package is only the browser half. The companion lives on
+        <strong>GitHub only</strong> (not npm / not a store download).
       </p>
-      <pre class="setup-cmd" id="setupCmd"></pre>
-      <p class="setup-hint muted" id="setupHint"></p>
-      <div class="setup-actions">
-        <button id="btnSetupGuide" type="button">Open guide</button>
-        <a
-          id="setupRepo"
-          class="setup-link"
-          href="https://github.com/leaf76/hermes-chrome"
-          target="_blank"
-          rel="noopener"
-          >GitHub</a
-        >
+
+      <ol class="steps" id="setupSteps">
+        <li>
+          <strong>Get it from GitHub</strong>
+          <p class="step-detail">
+            Companion is
+            <strong>not on npm</strong>. Source:
+            <a
+              href="https://github.com/leaf76/hermes-chrome"
+              target="_blank"
+              rel="noopener"
+              >github.com/leaf76/hermes-chrome</a
+            >.
+            One-liner installs to <code class="inline">~/.hermes/hermes-chrome</code>.
+            Needs <strong>Python 3</strong> and <strong>git</strong>.
+          </p>
+          <div class="step-links">
+            <a
+              class="btn-link"
+              href="https://github.com/leaf76/hermes-chrome"
+              target="_blank"
+              rel="noopener"
+              >Open GitHub</a
+            >
+            <button type="button" class="btn-link ghost" id="btnSetupGuide">
+              Full guide
+            </button>
+          </div>
+        </li>
+        <li>
+          <strong>Run this in Terminal</strong>
+          <p class="step-detail" id="setupCmdLabel">
+            From any folder — clones then installs (macOS / Linux):
+          </p>
+          <div class="cmd-box">
+            <code id="setupCmd"
+              >git clone https://github.com/leaf76/hermes-chrome.git
+cd hermes-chrome
+./scripts/hermes-chrome.sh install-for-agent</code
+            >
+            <button type="button" class="btn-copy" id="btnCopyCmd" title="Copy command">
+              Copy
+            </button>
+          </div>
+          <p class="step-detail muted" id="setupCmdAlt">
+            Already cloned? <code class="inline">cd</code> into that folder, then
+            <code class="inline">./scripts/hermes-chrome.sh install-for-agent</code>.
+            Windows: open the repo in PowerShell →
+            <code class="inline">.\scripts\install-windows.ps1</code>.
+          </p>
+        </li>
+        <li>
+          <strong>Come back here</strong>
+          <p class="step-detail" id="setupStep3">
+            Reload this extension, click the icon once, then
+            <strong>Pair</strong> if asked. Status should say Connected.
+          </p>
+        </li>
+      </ol>
+
+      <!-- Pair-only block (shown when bridge is up but not paired) -->
+      <div class="pair-block" id="pairBlock" hidden>
+        <p class="step-detail" id="pairLead"></p>
+        <div class="cmd-box" id="pairCmdBox">
+          <code id="pairCmd"></code>
+          <button type="button" class="btn-copy" id="btnCopyPair" title="Copy command">
+            Copy
+          </button>
+        </div>
+        <p class="step-detail muted" id="pairHint"></p>
       </div>
+
+      <p class="setup-note muted" id="setupNote"></p>
     </section>
 
-    <section class="card" id="statusCard">
-      <div class="row">
-        <span>Bridge</span>
-        <span id="bridgeBadge" class="badge">…</span>
-      </div>
-      <div class="row">
-        <span>Polling</span>
-        <span id="pollBadge" class="badge">…</span>
-      </div>
-      <div class="row">
-        <span>Group</span>
-        <span id="groupBadge" class="badge">…</span>
-      </div>
-      <div class="row">
-        <span>Version</span>
-        <span id="versionBadge" class="badge">…</span>
-      </div>
-      <div class="row">
-        <span>Auth</span>
-        <span id="authBadge" class="badge">…</span>
-      </div>
-      <div class="row">
-        <span>Last</span>
-        <span id="lastBadge" class="badge">…</span>
-      </div>
-      <p id="bridgeUrl" class="mono muted"></p>
-      <p id="lastLine" class="mono muted"></p>
-      <p id="authLine" class="mono muted"></p>
+    <!-- Primary actions (context-aware labels in JS) -->
+    <section class="actions" id="mainActions">
+      <button type="button" id="btnPrimary" class="primary">Refresh</button>
+      <button type="button" id="btnSecondary" class="secondary" hidden>Pair</button>
+    </section>
+    <section class="actions-secondary">
+      <button type="button" id="btnGuide" class="text-btn">Guide</button>
+      <span class="dot-sep" aria-hidden="true">·</span>
+      <button type="button" id="btnOptions" class="text-btn">Options</button>
+      <span class="dot-sep" aria-hidden="true">·</span>
+      <button type="button" id="btnReconnect" class="text-btn">Reconnect</button>
     </section>
 
-    <section class="actions">
-      <button id="btnRefresh" type="button">Refresh</button>
-      <button id="btnPair" type="button" class="secondary">Pair</button>
-      <button id="btnReconnect" type="button" class="secondary">Reconnect</button>
-      <button id="btnGuide" type="button" class="secondary">Guide</button>
-      <button id="btnOptions" type="button" class="secondary">Options</button>
-    </section>
+    <!-- Dev / technical: collapsed by default -->
+    <details class="advanced" id="advanced">
+      <summary>Technical details</summary>
+      <div class="advanced-body">
+        <div class="tech-grid">
+          <div class="tech-row">
+            <span>Bridge</span>
+            <span id="bridgeBadge" class="badge">…</span>
+          </div>
+          <div class="tech-row">
+            <span>Auth</span>
+            <span id="authBadge" class="badge">…</span>
+          </div>
+          <div class="tech-row">
+            <span>Polling</span>
+            <span id="pollBadge" class="badge">…</span>
+          </div>
+          <div class="tech-row">
+            <span>Workspace</span>
+            <span id="groupBadge" class="badge">…</span>
+          </div>
+          <div class="tech-row">
+            <span>Version</span>
+            <span id="versionBadge" class="badge">…</span>
+          </div>
+          <div class="tech-row">
+            <span>Last</span>
+            <span id="lastBadge" class="badge">…</span>
+          </div>
+        </div>
+        <p id="bridgeUrl" class="mono muted tech-line"></p>
+        <p id="lastLine" class="mono muted tech-line"></p>
+        <p id="authLine" class="mono muted tech-line"></p>
+        <p class="tech-label muted">Status JSON</p>
+        <pre id="out" class="mono"></pre>
+      </div>
+    </details>
 
-    <pre id="out" class="mono"></pre>
-    <p class="hint">
-      Needs <strong>companion + extension</strong>. One-time:
-      <code>install-for-agent</code> (Native Host + bridge), then click icon · Pair.
-      Not ready? Popup shows <strong>Setup required</strong>. Full guide: <strong>Guide</strong>
-      or GitHub <code>docs/GUIDE.md</code>.
-    </p>
     <script src="popup.js"></script>
   </body>
 </html>

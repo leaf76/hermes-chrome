@@ -164,53 +164,17 @@ function Open-Pairing {
   }
 }
 
-function Install-GrokMcp([string]$PythonExe) {
-  $grokDir = Split-Path $GrokConfig -Parent
-  if (-not (Test-Path $grokDir)) {
-    Write-Info "no ~/.grok — skip Grok MCP (install Grok Build first, re-run with this script)"
+function Install-McpAll([string]$PythonExe) {
+  $installer = Join-Path $PSScriptRoot "install-mcp.py"
+  if (-not (Test-Path $installer)) {
+    Write-Info "skip MCP (missing install-mcp.py)"
     return
   }
-  $block = @"
-
-# --- hermes-chrome (auto by scripts/install-windows.ps1) ---
-[mcp_servers.hermes-chrome]
-command = '$($PythonExe -replace "'", "''")'
-args = ['$($McpPy -replace "'", "''")']
-enabled = true
-startup_timeout_sec = 45
-tool_timeout_sec = 120
-
-[mcp_servers.hermes-chrome.env]
-HERMES_CHROME_ROOT = '$($Root -replace "'", "''")'
-# --- end hermes-chrome ---
-"@
-  $existing = ""
-  if (Test-Path $GrokConfig) {
-    $existing = Get-Content $GrokConfig -Raw -ErrorAction SilentlyContinue
-    if ($null -eq $existing) { $existing = "" }
+  Write-Info "registering MCP (Grok / Cursor / Claude Desktop when present)…"
+  & $PythonExe $installer --root $Root --python $PythonExe
+  if ($LASTEXITCODE -ne 0) {
+    Write-Info "MCP registration returned $LASTEXITCODE (partial ok)"
   }
-  if ($existing -match '\[mcp_servers\.hermes-chrome\]') {
-    # Replace previous auto block if present
-    $pattern = '(?s)\r?\n# --- hermes-chrome \(auto by scripts/install-windows\.ps1\) ---.*?# --- end hermes-chrome ---\r?\n?'
-    if ($existing -match $pattern) {
-      $existing = [regex]::Replace($existing, $pattern, "")
-    } else {
-      Write-Info "Grok config already has [mcp_servers.hermes-chrome] — not overwriting custom entry"
-      Write-Info "manual path: $McpPy"
-      return
-    }
-  }
-  if (-not (Test-Path $GrokConfig)) {
-    New-Item -ItemType Directory -Force -Path $grokDir | Out-Null
-    Set-Content -Path $GrokConfig -Value $block.TrimStart() -Encoding UTF8
-  } else {
-    # strip trailing whitespace then append
-    $trimmed = $existing.TrimEnd() + "`r`n" + $block
-    Set-Content -Path $GrokConfig -Value $trimmed -Encoding UTF8 -NoNewline
-    Add-Content -Path $GrokConfig -Value ""
-  }
-  Write-Info "Grok MCP registered in $GrokConfig"
-  Write-Info "Restart Grok Build session to load hermes-chrome tools"
 }
 
 # ---- main ----
@@ -252,23 +216,32 @@ if (Test-Path $nm) {
   Write-Info "skip native host (missing install-native-host.ps1)"
 }
 
-if (-not $SkipGrok) { Install-GrokMcp -PythonExe $py }
+if (-not $SkipGrok) { Install-McpAll -PythonExe $py }
+
+$doctor = Join-Path $PSScriptRoot "doctor.py"
+if (Test-Path $doctor) {
+  Write-Info "running doctor…"
+  & $py $doctor
+}
 
 Write-Host ""
 Write-Host "=== Companion (machine half) installed ===" -ForegroundColor Cyan
+Write-Host "Root:    $Root"
+Write-Host "Runtime: $RunDir"
+Write-Host "MCP:     $McpPy"
 Write-Host "This was step 1 of 2. Extension alone is never enough."
+Write-Host "Not on npm — companion is this tree (GitHub)."
 Write-Host ""
-Write-Host "=== Next: browser half (extension v1.7.1+ — CWS or Load unpacked) ===" -ForegroundColor Cyan
+Write-Host "=== Next: browser half (extension v1.7+ — CWS or Load unpacked) ===" -ForegroundColor Cyan
 Write-Host "1. Install/enable Hermes Chrome (nativeMessaging permission)"
 Write-Host "2. Reload extension → click icon once (native host starts bridge)"
-Write-Host "3. Wait for auto-pair, or click Pair"
-Write-Host "   Ready: Bridge online + Auth ready"
-Write-Host "   If popup shows Setup required, companion/host is still missing — re-run this script"
-Write-Host "4. Optional: Options → allow cross-workspace (tabs outside Hermes group)"
-Write-Host "5. Restart any MCP agent (Grok/Cursor/Claude) to load hermes_chrome_* tools"
+Write-Host "3. Wait for auto-pair, or click Pair — Ready: popup says Connected"
+Write-Host "4. Restart MCP agents (Grok/Cursor/Claude) if you use tools"
 Write-Host ""
-Write-Host "Smoke (PowerShell):"
+Write-Host "Smoke:"
 Write-Host "  Invoke-RestMethod http://127.0.0.1:19876/v1/health"
-Write-Host "  # Agents: MCP mcp_server.py  |  CLI: scripts/hermes-chrome.sh --json ping"
+Write-Host "  $py $doctor"
+Write-Host "  # CLI: scripts\hermes-chrome.sh --json ping"
+Write-Host "  # MCP snippet: $RunDir\mcp-snippet.json"
 Write-Host ""
 Write-Info "done."

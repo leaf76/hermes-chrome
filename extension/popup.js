@@ -1,28 +1,63 @@
-const out = document.getElementById("out");
-const bridgeBadge = document.getElementById("bridgeBadge");
-const pollBadge = document.getElementById("pollBadge");
-const groupBadge = document.getElementById("groupBadge");
-const versionBadge = document.getElementById("versionBadge");
-const lastBadge = document.getElementById("lastBadge");
-const authBadge = document.getElementById("authBadge");
-const bridgeUrl = document.getElementById("bridgeUrl");
-const lastLine = document.getElementById("lastLine");
-const authLine = document.getElementById("authLine");
-const setupCard = document.getElementById("setupCard");
-const setupKicker = document.getElementById("setupKicker");
-const setupTitle = document.getElementById("setupTitle");
-const setupBody = document.getElementById("setupBody");
-const setupCmd = document.getElementById("setupCmd");
-const setupHint = document.getElementById("setupHint");
-
-const CMD_INSTALL_AGENT =
-  "./scripts/hermes-chrome.sh install-for-agent\n" +
-  "# Windows:\n" +
-  "# powershell -ExecutionPolicy Bypass -File .\\scripts\\install-windows.ps1";
-const CMD_PAIR =
-  "./scripts/hermes-chrome.sh pair-open\n" +
-  "# then press Pair in this popup";
 const REPO = "https://github.com/leaf76/hermes-chrome";
+const CMD_INSTALL = [
+  "# Recommended one-liner (installs to ~/.hermes/hermes-chrome)",
+  "curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash",
+].join("\n");
+const CMD_INSTALL_ALT = [
+  "# Or clone then install:",
+  "git clone https://github.com/leaf76/hermes-chrome.git",
+  "cd hermes-chrome && ./scripts/install.sh --dev",
+].join("\n");
+const CMD_PAIR_ONLY = "hermes-chrome pair-open";
+// If PATH shim not installed yet:
+const CMD_PAIR_FALLBACK =
+  "~/.hermes/hermes-chrome/scripts/hermes-chrome.sh pair-open";
+
+const els = {
+  statusDot: document.getElementById("statusDot"),
+  summaryTitle: document.getElementById("summaryTitle"),
+  summaryDesc: document.getElementById("summaryDesc"),
+  metaRow: document.getElementById("metaRow"),
+  metaWorkspace: document.getElementById("metaWorkspace"),
+  metaLast: document.getElementById("metaLast"),
+  setupPanel: document.getElementById("setupPanel"),
+  setupHeading: document.getElementById("setupHeading"),
+  setupLead: document.getElementById("setupLead"),
+  setupCmd: document.getElementById("setupCmd"),
+  setupCmdLabel: document.getElementById("setupCmdLabel"),
+  setupCmdAlt: document.getElementById("setupCmdAlt"),
+  setupStep3: document.getElementById("setupStep3"),
+  setupNote: document.getElementById("setupNote"),
+  setupSteps: document.getElementById("setupSteps"),
+  pairBlock: document.getElementById("pairBlock"),
+  pairLead: document.getElementById("pairLead"),
+  pairCmd: document.getElementById("pairCmd"),
+  pairCmdBox: document.getElementById("pairCmdBox"),
+  pairHint: document.getElementById("pairHint"),
+  btnPrimary: document.getElementById("btnPrimary"),
+  btnSecondary: document.getElementById("btnSecondary"),
+  btnCopyCmd: document.getElementById("btnCopyCmd"),
+  btnCopyPair: document.getElementById("btnCopyPair"),
+  btnSetupGuide: document.getElementById("btnSetupGuide"),
+  btnGuide: document.getElementById("btnGuide"),
+  btnOptions: document.getElementById("btnOptions"),
+  btnReconnect: document.getElementById("btnReconnect"),
+  bridgeBadge: document.getElementById("bridgeBadge"),
+  pollBadge: document.getElementById("pollBadge"),
+  groupBadge: document.getElementById("groupBadge"),
+  versionBadge: document.getElementById("versionBadge"),
+  lastBadge: document.getElementById("lastBadge"),
+  authBadge: document.getElementById("authBadge"),
+  bridgeUrl: document.getElementById("bridgeUrl"),
+  lastLine: document.getElementById("lastLine"),
+  authLine: document.getElementById("authLine"),
+  out: document.getElementById("out"),
+};
+
+/** @type {"refresh"|"pair"|"reconnect"|"guide"|"github"} */
+let primaryAction = "refresh";
+/** @type {"pair"|"reconnect"|"guide"|"github"|"refresh"|null} */
+let secondaryAction = null;
 
 function setBadge(el, ok, text) {
   if (!el) return;
@@ -31,15 +66,17 @@ function setBadge(el, ok, text) {
 }
 
 function formatLast(act) {
-  if (!act || !act.kind) return { badge: "—", line: "" };
+  if (!act || !act.kind) return { badge: "—", line: "", short: "" };
   const ago = act.at ? Math.max(0, Math.round((Date.now() - act.at) / 1000)) : null;
-  const agoS = ago == null ? "" : ago < 60 ? `${ago}s ago` : `${Math.round(ago / 60)}m ago`;
+  const agoS =
+    ago == null ? "" : ago < 60 ? `${ago}s ago` : `${Math.round(ago / 60)}m ago`;
   const bits = [act.kind];
   if (act.bytes != null) bits.push(`${act.bytes}B`);
   if (act.status != null) bits.push(`HTTP ${act.status}`);
   return {
     badge: act.kind,
     line: [bits.join(" · "), act.url || act.title || "", agoS].filter(Boolean).join(" — "),
+    short: [act.kind, agoS].filter(Boolean).join(" · "),
   };
 }
 
@@ -49,192 +86,391 @@ function nativeHostMissing(s) {
   return !!(err && /not found|specified native messaging host/i.test(err));
 }
 
-/**
- * Show a prominent setup card when the product is not ready.
- * Healthy (bridge online + auth ready) hides the card.
- */
-function updateSetupCard(s) {
-  if (!setupCard) return;
+function isHealthy(s) {
+  return !!s.bridgeOk && (!s.bridgeAuth || (!!s.tokenSet && !!s.authReady));
+}
 
-  const healthy =
-    !!s.bridgeOk &&
-    (!s.bridgeAuth || (!!s.tokenSet && !!s.authReady));
+function setDot(kind) {
+  if (!els.statusDot) return;
+  els.statusDot.className = "status-dot" + (kind ? " " + kind : "");
+}
 
-  if (healthy) {
-    setupCard.hidden = true;
-    setupCard.classList.remove("setup-warn", "setup-need");
+function setPrimary(label, action) {
+  primaryAction = action;
+  if (els.btnPrimary) {
+    els.btnPrimary.textContent = label;
+    els.btnPrimary.hidden = false;
+  }
+}
+
+function setSecondary(label, action) {
+  secondaryAction = action;
+  if (!els.btnSecondary) return;
+  if (!label) {
+    els.btnSecondary.hidden = true;
+    secondaryAction = null;
     return;
   }
+  els.btnSecondary.hidden = false;
+  els.btnSecondary.textContent = label;
+}
 
-  setupCard.hidden = false;
-  setupCard.classList.remove("setup-warn", "setup-need");
+function showInstallSteps(opts) {
+  const panel = els.setupPanel;
+  if (!panel) return;
+  panel.hidden = false;
+  panel.classList.remove("is-warn", "is-error");
+  if (opts.tone === "warn") panel.classList.add("is-warn");
+  if (opts.tone === "error") panel.classList.add("is-error");
+
+  if (els.setupHeading) els.setupHeading.textContent = opts.heading;
+  if (els.setupLead) els.setupLead.innerHTML = opts.leadHtml;
+  if (els.setupNote) els.setupNote.textContent = opts.note || "";
+  if (els.setupSteps) els.setupSteps.hidden = false;
+  if (els.pairBlock) els.pairBlock.hidden = true;
+
+  if (els.setupCmd) els.setupCmd.textContent = CMD_INSTALL;
+  if (els.setupCmdLabel) {
+    els.setupCmdLabel.textContent =
+      "macOS / Linux — paste in Terminal (no npm; needs Python 3 + git):";
+  }
+  if (els.setupCmdAlt) {
+    els.setupCmdAlt.hidden = false;
+    els.setupCmdAlt.innerHTML =
+      "Installs to <code class=\"inline\">~/.hermes/hermes-chrome</code> + PATH " +
+      "<code class=\"inline\">hermes-chrome</code>. " +
+      "Windows: clone the repo, then " +
+      "<code class=\"inline\">.\\scripts\\install-windows.ps1</code>. " +
+      "Optional MCP is registered for Grok/Cursor/Claude when present.";
+  }
+  if (els.setupStep3) {
+    els.setupStep3.textContent =
+      opts.step3 ||
+      "Reload this extension, click the icon once, then Pair if asked. Status should say Connected.";
+  }
+}
+
+function showPairPanel(s) {
+  const panel = els.setupPanel;
+  if (!panel) return;
+  panel.hidden = false;
+  panel.classList.remove("is-error");
+  panel.classList.add("is-warn");
+
+  if (els.setupHeading) els.setupHeading.textContent = "Link this extension";
+  if (els.setupLead) {
+    els.setupLead.innerHTML = s.pairingOpen
+      ? "The local companion is already running. A short pairing window is open — click <strong>Pair</strong> below."
+      : "The local companion is running, but this extension still needs a one-time link (token).";
+  }
+  if (els.setupSteps) els.setupSteps.hidden = true;
+  if (els.pairBlock) els.pairBlock.hidden = false;
+
+  if (els.pairLead) {
+    els.pairLead.innerHTML = s.pairingOpen
+      ? "No Terminal step needed while pairing is open."
+      : "Open Terminal, <code class=\"inline\">cd</code> into the " +
+        "<strong>hermes-chrome folder you cloned from GitHub</strong> " +
+        "(not npm — there is no npm package), then run:";
+  }
+  if (els.pairCmdBox) els.pairCmdBox.hidden = !!s.pairingOpen;
+  if (els.pairCmd) {
+    els.pairCmd.textContent = CMD_PAIR_ONLY + "\n# or: " + CMD_PAIR_FALLBACK;
+  }
+  if (els.pairHint) {
+    els.pairHint.innerHTML = s.pairingOpen
+      ? "If Pair fails: Options → paste token from " +
+        "<code class=\"inline\">~/.hermes/run/hermes-chrome/bridge.env</code>."
+      : "CLI path after install.sh: <code class=\"inline\">hermes-chrome</code> " +
+        "or <code class=\"inline\">~/.hermes/hermes-chrome/scripts/…</code>. " +
+        "Or paste the token from " +
+        "<code class=\"inline\">~/.hermes/run/hermes-chrome/bridge.env</code> in Options.";
+  }
+  if (els.setupNote) {
+    els.setupNote.textContent =
+      "MCP is optional (not npm): mcp_server.py under ~/.hermes/hermes-chrome — " +
+      "install.sh registers Grok/Cursor/Claude when present.";
+  }
+}
+
+function hideSetup() {
+  if (els.setupPanel) {
+    els.setupPanel.hidden = true;
+    els.setupPanel.classList.remove("is-warn", "is-error");
+  }
+  if (els.pairBlock) els.pairBlock.hidden = true;
+}
+
+function updateUserFacing(s) {
+  const last = formatLast(s.lastActivity);
+  const workspaceName = s.running ? s.title || "Hermes" : null;
+
+  if (els.metaWorkspace) {
+    els.metaWorkspace.textContent = workspaceName
+      ? "Workspace: " + workspaceName
+      : "No agent workspace yet";
+  }
+  if (els.metaLast) {
+    els.metaLast.textContent = last.short ? "Last: " + last.short : "No recent agent activity";
+  }
+  if (els.metaRow) els.metaRow.hidden = false;
+
+  if (isHealthy(s)) {
+    hideSetup();
+    setDot("ok");
+    if (els.summaryTitle) els.summaryTitle.textContent = "Connected";
+    if (els.summaryDesc) {
+      els.summaryDesc.textContent = s.pairingOpen
+        ? "Local companion is running. Pairing window is still open (optional)."
+        : "Local companion is running. Agents can use this Chrome.";
+    }
+    setPrimary("Refresh", "refresh");
+    setSecondary(null);
+    return;
+  }
 
   if (!s.bridgeOk) {
     const nh = s.nativeHost || {};
     const nhErr = nh.error || "";
+
     if (nativeHostMissing(s)) {
-      setupCard.classList.add("setup-need");
-      if (setupKicker) setupKicker.textContent = "Setup required";
-      if (setupTitle) setupTitle.textContent = "Companion not installed";
-      if (setupBody) {
-        setupBody.textContent =
-          "This extension is only the browser half. Chrome cannot open a control port from an extension alone. Install the local companion once (bridge + Native Messaging host), then reload and click the icon.";
+      setDot("bad");
+      if (els.summaryTitle) els.summaryTitle.textContent = "Setup needed";
+      if (els.summaryDesc) {
+        els.summaryDesc.textContent =
+          "This extension is only half. Install the companion from GitHub.";
       }
-      if (setupCmd) setupCmd.textContent = CMD_INSTALL_AGENT;
-      if (setupHint) {
-        setupHint.textContent =
-          "Clone " + REPO + " · needs real Python 3 · then Reload extension.";
-      }
-    } else if (nh.ok === false && nhErr) {
-      setupCard.classList.add("setup-warn");
-      if (setupKicker) setupKicker.textContent = "Bridge offline";
-      if (setupTitle) setupTitle.textContent = "Native host reported an error";
-      if (setupBody) {
-        setupBody.textContent =
-          "Companion may be installed but the bridge is not up. Try Reconnect, or re-run the companion install.";
-      }
-      if (setupCmd) {
-        setupCmd.textContent =
-          "Native host: " + nhErr + "\n\n" + CMD_INSTALL_AGENT;
-      }
-      if (setupHint) setupHint.textContent = "Click Reconnect after the bridge starts.";
-    } else {
-      setupCard.classList.add("setup-warn");
-      if (setupKicker) setupKicker.textContent = "Bridge offline";
-      if (setupTitle) setupTitle.textContent = "Local bridge not on :19876";
-      if (setupBody) {
-        setupBody.textContent =
-          "Agents talk to a local bridge, not to the Chrome Web Store. Install the companion once if you have not, then click Reconnect.";
-      }
-      if (setupCmd) setupCmd.textContent = CMD_INSTALL_AGENT;
-      if (setupHint) {
-        setupHint.textContent =
-          "After install: Reload extension → click icon → wait for Bridge online.";
-      }
+      showInstallSteps({
+        tone: "error",
+        heading: "Install companion (GitHub — not npm)",
+        leadHtml:
+          "There is <strong>no npm package</strong>. Run the one-liner below to install the " +
+          "local companion to <code class=\"inline\">~/.hermes/hermes-chrome</code> " +
+          "(bridge on <code class=\"inline\">127.0.0.1:19876</code> + Native Host + optional MCP).",
+        note:
+          "Needs Python 3 + git · Source: github.com/leaf76/hermes-chrome · " +
+          "MCP is optional (same install, not a separate store).",
+      });
+      setPrimary("Open GitHub", "github");
+      setSecondary("Full guide", "guide");
+      return;
     }
+
+    if (nh.ok === false && nhErr) {
+      setDot("warn");
+      if (els.summaryTitle) els.summaryTitle.textContent = "Companion not responding";
+      if (els.summaryDesc) {
+        els.summaryDesc.textContent =
+          "Companion may be installed but the local bridge is down.";
+      }
+      showInstallSteps({
+        tone: "warn",
+        heading: "Restart the companion",
+        leadHtml:
+          "Try <strong>Reconnect</strong>. If that fails, open your " +
+          "<strong>GitHub clone</strong> of hermes-chrome and re-run install-for-agent.",
+        note: "Technical: " + nhErr,
+        step3: "After the bridge is up, click Reconnect here.",
+      });
+      setPrimary("Reconnect", "reconnect");
+      setSecondary("Open GitHub", "github");
+      return;
+    }
+
+    setDot("warn");
+    if (els.summaryTitle) els.summaryTitle.textContent = "Local bridge offline";
+    if (els.summaryDesc) {
+      els.summaryDesc.textContent =
+        "No companion on this Mac/PC yet — or it is not running.";
+    }
+    showInstallSteps({
+      tone: "warn",
+      heading: "Start or install from GitHub",
+      leadHtml:
+        "If you already cloned the repo, <code class=\"inline\">cd</code> there and run " +
+        "install-for-agent (or click Reconnect). " +
+        "Otherwise clone from GitHub first — <strong>not npm</strong>.",
+      note: "Agents talk only to your local bridge, never to the Chrome Web Store.",
+    });
+    setPrimary("Reconnect", "reconnect");
+    setSecondary("Open GitHub", "github");
     return;
   }
 
-  // Bridge up, auth not ready
   if (!s.bridgeAuth) {
-    setupCard.classList.add("setup-warn");
-    if (setupKicker) setupKicker.textContent = "Auth off";
-    if (setupTitle) setupTitle.textContent = "Bridge auth disabled";
-    if (setupBody) {
-      setupBody.textContent =
-        "ALLOW_NO_AUTH is set. Not recommended for daily Chrome. Prefer token + Pair.";
+    setDot("warn");
+    if (els.summaryTitle) els.summaryTitle.textContent = "Connected (auth off)";
+    if (els.summaryDesc) {
+      els.summaryDesc.textContent =
+        "Bridge is up, but auth is disabled. Not recommended for daily Chrome.";
     }
-    if (setupCmd) setupCmd.textContent = "";
-    if (setupHint) setupHint.textContent = "";
+    hideSetup();
+    if (els.setupPanel) {
+      els.setupPanel.hidden = false;
+      els.setupPanel.classList.add("is-warn");
+      if (els.setupHeading) els.setupHeading.textContent = "Security note";
+      if (els.setupLead) {
+        els.setupLead.textContent =
+          "ALLOW_NO_AUTH is set on the bridge. Prefer token + Pair for normal use.";
+      }
+      if (els.setupSteps) els.setupSteps.hidden = true;
+      if (els.pairBlock) els.pairBlock.hidden = true;
+      if (els.setupNote) els.setupNote.textContent = "";
+    }
+    setPrimary("Refresh", "refresh");
+    setSecondary(null);
     return;
   }
 
-  setupCard.classList.add("setup-need");
-  if (setupKicker) setupKicker.textContent = "Pair required";
-  if (setupTitle) setupTitle.textContent = "Link extension to bridge";
-  if (setupBody) {
-    setupBody.textContent = s.pairingOpen
-      ? "Pairing window is open. Press Pair below (or paste the token in Options)."
-      : "Open a short pairing window from the CLI, then press Pair in this popup.";
+  // Need pair — bridge already installed somewhere
+  setDot("warn");
+  if (els.summaryTitle) els.summaryTitle.textContent = "Pair required";
+  if (els.summaryDesc) {
+    els.summaryDesc.textContent = s.pairingOpen
+      ? "Bridge is up. Click Pair to finish linking."
+      : "Bridge is up. Run pair-open from your GitHub clone, then click Pair.";
   }
-  if (setupCmd) {
-    setupCmd.textContent = s.pairingOpen
-      ? "# Pairing open — press Pair in this popup"
-      : CMD_PAIR;
+  showPairPanel(s);
+  setPrimary("Pair", "pair");
+  setSecondary("Refresh", "refresh");
+}
+
+function updateTech(s) {
+  const view = { ...s };
+  if (view.lastActivity && view.lastActivity.pngBase64) {
+    view.lastActivity = { ...view.lastActivity, pngBase64: "[omitted]" };
   }
-  if (setupHint) {
-    setupHint.textContent = s.pairingOpen
-      ? "If Pair fails, paste token from ~/.hermes/run/hermes-chrome/bridge.env in Options."
-      : "Token lives in ~/.hermes/run/hermes-chrome/bridge.env (chmod 600).";
+  if (els.out) els.out.textContent = JSON.stringify(view, null, 2);
+  if (els.bridgeUrl) els.bridgeUrl.textContent = s.bridgeUrl || "";
+
+  setBadge(els.bridgeBadge, !!s.bridgeOk, s.bridgeOk ? "online" : "offline");
+  setBadge(els.pollBadge, !!s.polling, s.polling ? "active" : "idle");
+  setBadge(
+    els.groupBadge,
+    s.running ? true : null,
+    s.running ? s.title || "Hermes" : "none"
+  );
+  const ver = s.version || chrome.runtime.getManifest().version;
+  setBadge(els.versionBadge, true, ver || "?");
+  const last = formatLast(s.lastActivity);
+  setBadge(els.lastBadge, s.lastActivity ? true : null, last.badge);
+  if (els.lastLine) els.lastLine.textContent = last.line;
+
+  if (!s.bridgeOk) {
+    setBadge(els.authBadge, false, "no bridge");
+    if (els.authLine) {
+      if (nativeHostMissing(s)) {
+        els.authLine.textContent = "Native host not found — install companion from GitHub.";
+      } else if (s.nativeHost && s.nativeHost.ok === false && s.nativeHost.error) {
+        els.authLine.textContent = "Native host: " + s.nativeHost.error;
+      } else {
+        els.authLine.textContent = "Bridge not reachable on :19876.";
+      }
+    }
+  } else if (!s.bridgeAuth) {
+    setBadge(els.authBadge, false, "off");
+    if (els.authLine) els.authLine.textContent = "Auth disabled (ALLOW_NO_AUTH).";
+  } else if (s.tokenSet && s.authReady) {
+    setBadge(els.authBadge, true, "ready");
+    if (els.authLine) {
+      els.authLine.textContent = s.pairingOpen
+        ? "Token set · pairing window still open"
+        : "Token set";
+    }
+  } else {
+    setBadge(els.authBadge, false, "need pair");
+    if (els.authLine) {
+      els.authLine.textContent = s.pairingOpen
+        ? "Pairing open — use Pair"
+        : "From GitHub clone: ./scripts/hermes-chrome.sh pair-open";
+    }
   }
 }
 
 async function refresh() {
   const s = await chrome.runtime.sendMessage({ type: "status" });
-  // Avoid dumping secrets / huge capture blobs
-  const view = { ...s };
-  if (view.lastActivity && view.lastActivity.pngBase64) {
-    view.lastActivity = { ...view.lastActivity, pngBase64: "[omitted]" };
-  }
-  out.textContent = JSON.stringify(view, null, 2);
-  bridgeUrl.textContent = s.bridgeUrl || "";
-  setBadge(bridgeBadge, !!s.bridgeOk, s.bridgeOk ? "online" : "offline");
-  setBadge(pollBadge, !!s.polling, s.polling ? "active" : "idle");
-  setBadge(
-    groupBadge,
-    s.running ? true : null,
-    s.running ? s.title || "Hermes" : "none"
-  );
-  const ver = s.version || chrome.runtime.getManifest().version;
-  setBadge(versionBadge, true, ver || "?");
-  const last = formatLast(s.lastActivity);
-  setBadge(lastBadge, s.lastActivity ? true : null, last.badge);
-  if (lastLine) lastLine.textContent = last.line;
-
-  // Auth status
-  if (authBadge) {
-    if (!s.bridgeOk) {
-      setBadge(authBadge, false, "no bridge");
-      if (authLine) {
-        if (nativeHostMissing(s)) {
-          authLine.textContent =
-            "Companion not installed — see Setup required above.";
-        } else if (s.nativeHost && s.nativeHost.ok === false && s.nativeHost.error) {
-          authLine.textContent =
-            "Bridge down; native host: " + s.nativeHost.error;
-        } else {
-          authLine.textContent =
-            "Local bridge not on :19876 — install companion or Reconnect.";
-        }
-      }
-    } else if (!s.bridgeAuth) {
-      setBadge(authBadge, false, "off (insecure)");
-      if (authLine) {
-        authLine.textContent =
-          "Bridge auth disabled (ALLOW_NO_AUTH). Not recommended.";
-      }
-    } else if (s.tokenSet && s.authReady) {
-      setBadge(authBadge, true, "ready");
-      if (authLine) {
-        authLine.textContent = s.pairingOpen
-          ? "Token set · pairing window still open"
-          : "Token set";
-      }
-    } else {
-      setBadge(authBadge, false, "need pair");
-      if (authLine) {
-        authLine.textContent = s.pairingOpen
-          ? "Click Pair (window open) or paste token in Options"
-          : "Run: hermes-chrome.sh pair-open  then Pair";
-      }
-    }
-  }
-
-  updateSetupCard(s);
+  updateUserFacing(s);
+  updateTech(s);
 }
 
 function openGuide() {
-  const url = chrome.runtime.getURL("help.html");
-  chrome.tabs.create({ url, active: true });
+  chrome.tabs.create({ url: chrome.runtime.getURL("help.html"), active: true });
 }
 
-document.getElementById("btnRefresh").onclick = refresh;
-document.getElementById("btnReconnect").onclick = async () => {
-  await chrome.runtime.sendMessage({ type: "reconnect" });
-  await refresh();
-};
-document.getElementById("btnPair").onclick = async () => {
-  const r = await chrome.runtime.sendMessage({ type: "pair" });
-  if (authLine) {
-    authLine.textContent = r && r.ok ? r.hint || "Paired" : r?.error || "Pair failed";
+function openGithub() {
+  chrome.tabs.create({ url: REPO, active: true });
+}
+
+async function runAction(action) {
+  if (action === "refresh") {
+    await refresh();
+    return;
   }
-  await refresh();
-};
-document.getElementById("btnOptions").onclick = () => {
-  chrome.runtime.openOptionsPage();
-};
-document.getElementById("btnGuide").onclick = openGuide;
-const btnSetupGuide = document.getElementById("btnSetupGuide");
-if (btnSetupGuide) btnSetupGuide.onclick = openGuide;
+  if (action === "reconnect") {
+    await chrome.runtime.sendMessage({ type: "reconnect" });
+    await refresh();
+    return;
+  }
+  if (action === "pair") {
+    const r = await chrome.runtime.sendMessage({ type: "pair" });
+    if (els.authLine) {
+      els.authLine.textContent =
+        r && r.ok ? r.hint || "Paired" : (r && r.error) || "Pair failed";
+    }
+    if (els.summaryDesc && r && !r.ok) {
+      els.summaryDesc.textContent =
+        (r && r.error) || "Pair failed — open Technical details or paste token in Options.";
+    }
+    await refresh();
+    return;
+  }
+  if (action === "guide") {
+    openGuide();
+    return;
+  }
+  if (action === "github") {
+    openGithub();
+  }
+}
+
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    if (btn) {
+      const prev = btn.textContent;
+      btn.textContent = "Copied";
+      btn.classList.add("copied");
+      setTimeout(() => {
+        btn.textContent = prev || "Copy";
+        btn.classList.remove("copied");
+      }, 1500);
+    }
+  } catch (_) {
+    if (btn) btn.textContent = "Select & copy";
+  }
+}
+
+if (els.btnPrimary) {
+  els.btnPrimary.onclick = () => runAction(primaryAction);
+}
+if (els.btnSecondary) {
+  els.btnSecondary.onclick = () => runAction(secondaryAction || "refresh");
+}
+if (els.btnGuide) els.btnGuide.onclick = openGuide;
+if (els.btnSetupGuide) els.btnSetupGuide.onclick = openGuide;
+if (els.btnOptions) {
+  els.btnOptions.onclick = () => chrome.runtime.openOptionsPage();
+}
+if (els.btnReconnect) {
+  els.btnReconnect.onclick = () => runAction("reconnect");
+}
+if (els.btnCopyCmd) {
+  els.btnCopyCmd.onclick = () =>
+    copyText(els.setupCmd ? els.setupCmd.textContent : CMD_INSTALL, els.btnCopyCmd);
+}
+if (els.btnCopyPair) {
+  els.btnCopyPair.onclick = () =>
+    copyText(els.pairCmd ? els.pairCmd.textContent : CMD_PAIR_ONLY, els.btnCopyPair);
+}
 
 refresh();

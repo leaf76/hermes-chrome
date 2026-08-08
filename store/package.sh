@@ -44,7 +44,9 @@ assert m.get("version"), "version required"
 help_html=z.read("help.html").decode()
 assert "two parts" in help_html.lower() or "You need two parts" in help_html or "需要兩半" in help_html
 popup=z.read("popup.html").decode()
-assert "setupCard" in popup
+assert "setupPanel" in popup or "setupCard" in popup
+assert "summaryCard" in popup
+assert "Technical details" in popup
 print("package_ok", m["name"], m["version"], "files", len(names))
 print("description:", m.get("description", ""))
 PY

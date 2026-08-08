@@ -17,21 +17,28 @@ let an extension open a control port. Hermes Chrome is always:
 
 | Half | What | Where |
 |------|------|--------|
-| **Companion** (machine half) | Local bridge on `127.0.0.1:19876` + Native Messaging host + token | This repo: `install-for-agent` / Windows installer |
+| **Companion** (machine half) | Local bridge on `127.0.0.1:19876` + Native Messaging host + token | **GitHub + `install.sh`** → `~/.hermes/hermes-chrome` |
 | **Extension** (browser half) | Tab workspace, capture, DOM ops; talks to the bridge | Chrome Web Store or Load unpacked → `extension/` |
 
-**Ready** means: Bridge **online** + Auth **ready** (popup), and CLI/MCP can `ping`.
+**Not on npm / PyPI.** There is no `npx hermes-chrome`. Optional **MCP** ships as
+`mcp_server.py` in the companion install; `install.sh` registers Grok / Cursor /
+Claude Desktop when those apps are present. Not a separate MCP marketplace package.
+
+**Ready** means: popup **Connected**, and CLI/MCP can `ping`.
 
 ```bash
-# 1) Companion once per machine (macOS / Linux)
-./scripts/hermes-chrome.sh install-for-agent
-# Windows: powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+# 1) Companion once per machine (recommended one-liner)
+curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
+# → ~/.hermes/hermes-chrome + ~/.local/bin/hermes-chrome
+# Windows: clone repo, then:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 
-# 2) Install / reload extension (v1.7+) → click icon once → Pair if needed
+# 2) Install / reload extension (v1.8+) → click icon once → Pair if needed
 
 # 3) Smoke
-./scripts/hermes-chrome.sh --json bridge-status   # extension_connected:true
-./scripts/hermes-chrome.sh --json ping
+hermes-chrome --json bridge-status   # extension_connected:true
+hermes-chrome --json ping
+hermes-chrome doctor
 ```
 
 Full walkthrough: [docs/GUIDE.md](docs/GUIDE.md) · [繁中 docs/GUIDE.zh-TW.md](docs/GUIDE.zh-TW.md) ·

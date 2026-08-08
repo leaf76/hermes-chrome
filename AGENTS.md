@@ -8,7 +8,14 @@ product boundary.
 
 **Two halves:** machine **companion** (bridge + native host + token) + browser
 **extension**. Never claim CWS-only install is enough. UX copy: companion first;
-popup **Setup required** when companion/bridge is missing.
+popup **Setup needed** when companion/bridge is missing.
+
+**Canonical install:**
+- One-liner: `curl -fsSL …/scripts/install.sh | bash` → `~/.hermes/hermes-chrome`
+- Runtime: `~/.hermes/run/hermes-chrome` · CLI shim: `~/.local/bin/hermes-chrome`
+- MCP: `scripts/install-mcp.py` (Grok + Cursor + Claude Desktop); not npm
+- Doctor: `hermes-chrome doctor` / `scripts/doctor.py`
+- Not on npm/PyPI.
 
 ## Rules
 
@@ -25,18 +32,18 @@ popup **Setup required** when companion/bridge is missing.
 ## Validate
 
 ```bash
-# Preferred agent-ready path
-./scripts/hermes-chrome.sh install-for-agent   # or Windows: scripts/install-windows.ps1
+# Preferred product path (fixed root)
+./scripts/install.sh --dev          # or: curl …/install.sh | bash
+./scripts/hermes-chrome.sh doctor
 ./scripts/hermes-chrome.sh bridge-status       # auth:true + extension_connected
-./scripts/hermes-chrome.sh ping                # need extension v1.5.0+ reloaded
+./scripts/hermes-chrome.sh ping
 ./scripts/hermes-chrome.sh list-tabs           # workspace only
-# MCP smoke (stdio — usually spawned by Grok, not interactive)
+python3 scripts/install-mcp.py --status
+# MCP smoke (stdio — usually spawned by agent, not interactive)
 python3 -c "import mcp_server; print(mcp_server.ensure_bridge())"
 # unauth probe must fail:
 curl -sS -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' \
   -d '{"action":"ping"}' http://127.0.0.1:19876/v1/command   # expect 401
-./scripts/hermes-chrome.sh check-url https://example.com/
-./scripts/hermes-chrome.sh download https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf
 ./store/package.sh
 ```
 

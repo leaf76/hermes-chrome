@@ -26,10 +26,12 @@ It is **not locked to one product or domain**. Open GitHub, docs, dashboards, ne
 Developers using Hermes Agent, Grok, Cursor, Claude Desktop, or any local CLI that needs authenticated browser flows while keeping personal browsing separate from agent work.
 
 **How to use (order matters)**
-1. One-time companion from github.com/leaf76/hermes-chrome — run `install-for-agent` (macOS/Linux) or `scripts/install-windows.ps1` (Windows). Needs real Python 3.
-2. Install this extension (v1.7+)
-3. Reload extension, click the icon once, Pair if needed (popup: Bridge online, Auth ready)
-4. From your agent/CLI: open any URL, list-tabs, capture, eval/click/type
+1. One-time companion (not npm). macOS/Linux:
+   `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
+   → installs to ~/.hermes/hermes-chrome. Windows: clone repo → `scripts/install-windows.ps1`. Needs Python 3.9+ and git.
+2. Install this extension (v1.8+)
+3. Reload extension, click the icon once, Pair if needed (popup: Connected)
+4. From your agent/CLI: open any URL, list-tabs, capture, eval/click/type. Optional MCP is registered for Grok/Cursor/Claude when present.
 5. Full guide: extension popup → Guide, or docs/GUIDE.md on GitHub
 
 **Ready check**

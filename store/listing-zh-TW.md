@@ -25,10 +25,12 @@ Hermes Chrome 是**本機 agent companion**：讓 AI agent / CLI 操作你真實
 使用 Hermes、Grok、Cursor、Claude Desktop 或其他本機 CLI、需要帶 cookie/SSO 瀏覽器流程的開發者。
 
 **怎麼用（順序重要）**
-1. 到 github.com/leaf76/hermes-chrome 做**一次** companion 安裝：`install-for-agent`（macOS/Linux）或 `scripts/install-windows.ps1`（Windows）。需要真的 Python 3。
-2. 安裝本擴充（v1.7+）
-3. 重新載入 extension、點一次 icon，需要時 Pair（popup：Bridge online、Auth ready）
-4. 用 agent／CLI：開啟任意 URL、list-tabs、截圖、eval/click/type
+1. **一次**安裝 companion（沒有 npm）。macOS/Linux：
+   `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
+   → 裝到 ~/.hermes/hermes-chrome。Windows：clone 後跑 `scripts/install-windows.ps1`。需要 Python 3.9+ 與 git。
+2. 安裝本擴充（v1.8+）
+3. 重新載入 extension、點一次 icon，需要時 Pair（popup：Connected）
+4. 用 agent／CLI：開啟任意 URL、list-tabs、截圖、eval/click/type。可選 MCP 會在偵測到 Grok/Cursor/Claude 時註冊。
 5. 完整教學：popup → Guide，或 GitHub `docs/GUIDE.zh-TW.md`
 
 **就緒檢查**
