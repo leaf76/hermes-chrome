@@ -17,7 +17,11 @@ Auth (default ON):
   loaded/generated in ~/.hermes/run/hermes-chrome/bridge.env.
   Require header X-Hermes-Chrome-Token on /v1/command, /v1/poll, /v1/result*.
   Set HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH=1 to run without a token (not recommended).
-  /v1/health stays open for liveness (no secrets).
+  /v1/health public body is minimal; full detail needs the token.
+  Query-string ?token= is OFF by default (HERMES_CHROME_ALLOW_QUERY_TOKEN=1 to enable).
+  Pairing/CORS only allow listed chrome-extension ids (CWS id + optional extras).
+  Auto-reopen pairing after disconnect is OFF by default
+  (HERMES_CHROME_AUTO_REPAIR=1 to enable).
 """
 
 from __future__ import annotations
@@ -41,6 +45,9 @@ PORT = int(
     os.environ.get("HERMES_CHROME_BRIDGE_PORT")
     or os.environ.get("HERMES_TABGROUP_BRIDGE_PORT", "19876")
 )
+
+# Chrome Web Store id (stable). Unpacked builds pin the same id via manifest key.
+CWS_EXTENSION_ID = "mkoaoadlkijccmmbkioagnlngbbeocfa"
 
 # Consider extension connected if it polled within this many seconds.
 _CONNECTED_MAX_AGE_S = float(
@@ -70,10 +77,39 @@ _extension_name: str | None = None
 _state_lock = threading.Lock()
 _pairing_until = _started_at + max(30.0, _PAIRING_WINDOW_S)
 _pair_used = False
-# When extension goes quiet, re-open pairing so reload can auto-pair without CLI.
+# Quiet period before optional auto-reopen (only if AUTO_REPAIR enabled).
 _PAIRING_REOPEN_AFTER_S = float(
     os.environ.get("HERMES_CHROME_BRIDGE_PAIRING_REOPEN_S", "20") or 20
 )
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _allowed_extension_ids() -> frozenset[str]:
+    """Official CWS/unpacked id plus HERMES_CHROME_ALLOWED_EXTENSION_IDS (comma-separated)."""
+    ids = {CWS_EXTENSION_ID}
+    extra = (
+        os.environ.get("HERMES_CHROME_ALLOWED_EXTENSION_IDS")
+        or os.environ.get("HERMES_CHROME_EXTRA_EXTENSION_ID")
+        or ""
+    ).strip()
+    for part in extra.replace(" ", ",").split(","):
+        part = part.strip().lower()
+        if re.fullmatch(r"[a-p]{32}", part):
+            ids.add(part)
+    return frozenset(ids)
+
+
+def _extension_id_from_origin(origin: str) -> str | None:
+    m = re.match(r"^chrome-extension://([a-p]{32})/?$", (origin or "").strip())
+    if not m:
+        # Broader Chrome id charset (some builds); still require 32 chars a-p for MV3
+        m = re.match(r"^chrome-extension://([a-z]{32})/?$", (origin or "").strip(), re.I)
+    if not m:
+        return None
+    return m.group(1).lower()
 
 
 def _run_dir() -> Path:
@@ -177,9 +213,19 @@ def _note_extension_seen(
 
 
 def _maybe_reopen_pairing() -> None:
-    """Re-open pairing when extension is disconnected so reload can auto-pair."""
+    """Optionally re-open pairing when extension is disconnected.
+
+    Default OFF. Enable with HERMES_CHROME_AUTO_REPAIR=1 (or legacy
+    HERMES_CHROME_BRIDGE_AUTO_REPAIR=1). Prefer explicit pair-open after token
+    is established; stored extension tokens already re-auth without re-pair.
+    """
     global _pair_used, _pairing_until
     if not TOKEN:
+        return
+    if not (
+        _env_truthy("HERMES_CHROME_AUTO_REPAIR")
+        or _env_truthy("HERMES_CHROME_BRIDGE_AUTO_REPAIR")
+    ):
         return
     with _state_lock:
         last = _last_poll_at
@@ -205,8 +251,10 @@ def _purge_results(now: float | None = None) -> None:
         _results.pop(k, None)
 
 
-def _health_payload() -> dict:
-    _maybe_reopen_pairing()
+def _health_payload(*, detail: bool = False) -> dict:
+    # Do not auto-reopen pairing from public health probes.
+    if detail:
+        _maybe_reopen_pairing()
     with _state_lock:
         last = _last_poll_at
         ver = _extension_version
@@ -214,38 +262,50 @@ def _health_payload() -> dict:
         pairing = (not _pair_used) and time.time() < _pairing_until and bool(TOKEN)
     age = None if last is None else round(time.time() - last, 1)
     connected = age is not None and age <= _CONNECTED_MAX_AGE_S
-    return {
+    # Public: liveness only (no pairing_open / version / limits recon).
+    public = {
         "ok": True,
         "service": "hermes-chrome-bridge",
         "uptime_s": round(time.time() - _started_at, 1),
-        "queued": _cmd_q.qsize(),
+        "auth_required": bool(TOKEN),
         "auth": bool(TOKEN),
-        "auth_source": TOKEN_SOURCE if TOKEN else "off",
-        "pairing_open": pairing,
-        "extension_last_seen_s": age,
         "extension_connected": connected,
-        "extension_version": ver,
-        "extension": name,
-        "connected_max_age_s": _CONNECTED_MAX_AGE_S,
-        "limits": {
-            "max_body_bytes": _MAX_BODY_BYTES,
-            "max_result_bytes": _MAX_RESULT_BYTES,
-            "max_queue": _MAX_QUEUE,
-            "result_ttl_s": _RESULT_TTL_S,
-        },
     }
+    if not detail:
+        return public
+    public.update(
+        {
+            "queued": _cmd_q.qsize(),
+            "auth_source": TOKEN_SOURCE if TOKEN else "off",
+            "pairing_open": pairing,
+            "extension_last_seen_s": age,
+            "extension_version": ver,
+            "extension": name,
+            "connected_max_age_s": _CONNECTED_MAX_AGE_S,
+            "allowed_extension_ids": sorted(_allowed_extension_ids()),
+            "auto_repair": _env_truthy("HERMES_CHROME_AUTO_REPAIR")
+            or _env_truthy("HERMES_CHROME_BRIDGE_AUTO_REPAIR"),
+            "query_token_allowed": _env_truthy("HERMES_CHROME_ALLOW_QUERY_TOKEN"),
+            "limits": {
+                "max_body_bytes": _MAX_BODY_BYTES,
+                "max_result_bytes": _MAX_RESULT_BYTES,
+                "max_queue": _MAX_QUEUE,
+                "result_ttl_s": _RESULT_TTL_S,
+            },
+        }
+    )
+    return public
 
 
 def _cors_origin(handler: BaseHTTPRequestHandler) -> str | None:
-    """Allow chrome-extension:// origins only (not *)."""
+    """Allow only listed chrome-extension:// origins (not * , not arbitrary ids)."""
     origin = (handler.headers.get("Origin") or "").strip()
-    if origin.startswith("chrome-extension://"):
-        # Basic shape check
-        if re.match(r"^chrome-extension://[a-p]{32}$", origin) or re.match(
-            r"^chrome-extension://[a-zA-Z0-9\-]+$", origin
-        ):
-            return origin
-    return None
+    ext_id = _extension_id_from_origin(origin)
+    if not ext_id:
+        return None
+    if ext_id not in _allowed_extension_ids():
+        return None
+    return f"chrome-extension://{ext_id}"
 
 
 def _set_cors(handler: BaseHTTPRequestHandler) -> None:
@@ -285,9 +345,11 @@ def _token_ok(handler: BaseHTTPRequestHandler, qs: dict) -> bool:
     header = handler.headers.get("X-Hermes-Chrome-Token") or handler.headers.get(
         "X-Hermes-Token"
     )
-    # Query token still accepted for legacy CLIs but discouraged (logs).
-    qtok = (qs.get("token") or [None])[0]
-    provided = (header or qtok or "").strip()
+    provided = (header or "").strip()
+    # Query-string token is OFF by default (leaks via shell history / access logs).
+    if not provided and _env_truthy("HERMES_CHROME_ALLOW_QUERY_TOKEN"):
+        qtok = (qs.get("token") or [None])[0]
+        provided = (qtok or "").strip()
     if not provided:
         return False
     # Constant-time compare
@@ -336,7 +398,9 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         if path in ("/health", "/v1/health"):
-            _json_response(self, 200, _health_payload())
+            # Public liveness is minimal; full payload requires token when auth is on.
+            detail = (not TOKEN) or _token_ok(self, qs)
+            _json_response(self, 200, _health_payload(detail=detail))
             return
 
         if not _token_ok(self, qs):
@@ -415,14 +479,16 @@ class Handler(BaseHTTPRequestHandler):
                     403,
                     {
                         "ok": False,
-                        "error": "chrome-extension Origin required for pairing",
+                        "error": "pairing requires Origin of an allowed Hermes Chrome "
+                        f"extension id (official: {CWS_EXTENSION_ID}); "
+                        "set HERMES_CHROME_ALLOWED_EXTENSION_IDS for extras",
                     },
                 )
                 return
             with _state_lock:
                 open_pair = (not _pair_used) and time.time() < _pairing_until
             if not open_pair:
-                # Last chance: auto-reopen if extension looks disconnected.
+                # Optional auto-reopen only when HERMES_CHROME_AUTO_REPAIR=1.
                 _maybe_reopen_pairing()
                 with _state_lock:
                     open_pair = (not _pair_used) and time.time() < _pairing_until
@@ -578,9 +644,18 @@ def main() -> None:
         )
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     auth = "on" if TOKEN else "off"
+    auto = (
+        "on"
+        if (
+            _env_truthy("HERMES_CHROME_AUTO_REPAIR")
+            or _env_truthy("HERMES_CHROME_BRIDGE_AUTO_REPAIR")
+        )
+        else "off"
+    )
     print(
         f"hermes-chrome-bridge listening on http://{HOST}:{PORT} "
-        f"(auth={auth} source={TOKEN_SOURCE} pairing_window_s={_PAIRING_WINDOW_S})",
+        f"(auth={auth} source={TOKEN_SOURCE} pairing_window_s={_PAIRING_WINDOW_S} "
+        f"auto_repair={auto} ext_ids={','.join(sorted(_allowed_extension_ids()))})",
         flush=True,
     )
     if TOKEN and TOKEN_SOURCE == "generated":

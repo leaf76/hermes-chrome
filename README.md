@@ -205,19 +205,23 @@ CLI-only agents can skip MCP and call `hermes-chrome.sh --json …` or HTTP `:19
 
 Hermes Chrome is a **local control plane** for your daily browser. Treat the bridge token like a password to your Chrome session.
 
-| Control | Default (v1.5+) |
-|---------|-----------------|
+Full write-up: [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
+| Control | Default |
+|---------|---------|
 | Bind | `127.0.0.1` only |
 | Bridge token | **ON** (auto `~/.hermes/run/hermes-chrome/bridge.env`) |
-| Auto-pair | Extension retries pair while disconnected; CLI waits/retries commands |
-| CORS | `chrome-extension://…` only (not `*`) |
+| Token transport | Header only (`X-Hermes-Chrome-Token`); `?token=` off unless `HERMES_CHROME_ALLOW_QUERY_TOKEN=1` |
+| Pairing / CORS | Official extension id only (+ optional `HERMES_CHROME_ALLOWED_EXTENSION_IDS`) |
+| Auto-reopen pairing | **OFF** (`HERMES_CHROME_AUTO_REPAIR=1` to enable) |
+| `/v1/health` | Public = liveness; full detail needs token |
 | `list-tabs` | Workspace group only (`--all` for everything) |
 | `eval` / `click` / `type` / `capture` | Workspace tabs only (Options override) |
 | `eval` world | ISOLATED by default (`world: "MAIN"` opt-in) |
 | Private/IP hosts | Blocked for check-url / download / cookie fetch |
 | Queue / body limits | Enforced on bridge |
 
-**Threat model:** you trust this machine’s user + your agent CLI. You do **not** trust random websites or other local processes without the token.
+**Threat model:** you trust this machine’s user + your agent CLI. You do **not** trust random websites, arbitrary other extensions, or processes without the token.
 
 Disable auth only if you accept the risk: `HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH=1`.
 

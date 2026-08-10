@@ -92,12 +92,25 @@ WAIT_TRIES="${HERMES_CHROME_WAIT_TRIES:-45}"          # ~45s default
 WAIT_SLEEP_S="${HERMES_CHROME_WAIT_SLEEP:-1}"
 CMD_RETRIES="${HERMES_CHROME_CMD_RETRIES:-3}"
 
+# Prefer authenticated health (full detail); public health is liveness-only.
 bridge_healthy() {
-  curl -fsS --max-time 1 "${BRIDGE_URL}/v1/health" >/dev/null 2>&1
+  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+    curl -fsS --max-time 1 \
+      -H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}" \
+      "${BRIDGE_URL}/v1/health" >/dev/null 2>&1
+  else
+    curl -fsS --max-time 1 "${BRIDGE_URL}/v1/health" >/dev/null 2>&1
+  fi
 }
 
 bridge_health_json() {
-  curl -fsS --max-time 2 "${BRIDGE_URL}/v1/health" 2>/dev/null || echo '{}'
+  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+    curl -fsS --max-time 2 \
+      -H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}" \
+      "${BRIDGE_URL}/v1/health" 2>/dev/null || echo '{}'
+  else
+    curl -fsS --max-time 2 "${BRIDGE_URL}/v1/health" 2>/dev/null || echo '{}'
+  fi
 }
 
 extension_connected() {
@@ -159,7 +172,7 @@ wait_for_extension() {
 cmd_bridge_status() {
   if bridge_healthy; then
     local health
-    health="$(curl -fsS --max-time 2 "${BRIDGE_URL}/v1/health")"
+    health="$(bridge_health_json)"
     if is_json; then
       echo "$health"
       return 0

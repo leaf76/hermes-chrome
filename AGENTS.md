@@ -56,6 +56,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' \
 - Prefer `install-for-agent` / `install-windows.ps1` (includes native host registration).
 - Host name is fixed: `com.leaf76.hermes_chrome`. CWS extension id:
   `mkoaoadlkijccmmbkioagnlngbbeocfa` (manifest `key` pins unpacked id).
+- Bridge security (v1.8.2+): pair/CORS allowlist that id; no query token by default;
+  no auto-reopen pairing unless `HERMES_CHROME_AUTO_REPAIR=1`; health detail needs token.
+  See `docs/THREAT-MODEL.md`.
 - `mcp_server.py` + HTTP bridge are **agent-agnostic** — not Grok-only.
 - `mcp_server.py` / `native_host/host.py` / `lib/bridge_runtime.py` stay **stdlib-only**.
 - Do not claim “install CWS only”; honest UX is “companion once + CWS”.

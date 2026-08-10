@@ -62,6 +62,8 @@ What it is NOT:
   messaging is for auto-start / first-run reliability and does not leave the machine.
 
 Host name: com.leaf76.hermes_chrome
+Official extension id: mkoaoadlkijccmmbkioagnlngbbeocfa
+(Bridge pairing/CORS allowlist this id only — see docs/THREAT-MODEL.md.)
 Repo: https://github.com/leaf76/hermes-chrome
 ```
 

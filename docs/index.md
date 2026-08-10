@@ -14,6 +14,7 @@ cannot open a control port.
 - **Chrome Web Store package:** see repo `store/` after `./store/package.sh`
 - **In-extension guide:** popup → **Guide** (`help.html`)
 - **Packaging / release:** [PACKAGING.md](./PACKAGING.md)
+- **Threat model:** [THREAT-MODEL.md](./THREAT-MODEL.md)
 
 Default agent workspace uses a Chrome Tab Group. Open any `http(s)` URL via CLI/MCP;
 optional product finders are helpers only, not hard-coded limits.
