@@ -4,13 +4,19 @@
 *.pid
 state.env
 .env
+*.env
+!.env.example
+bridge.env
 .venv/
 __pycache__/
 *.pyc
 
-# Bridge runtime (should live under ~/.hermes/run/…)
+# Bridge runtime (should live under ~/.hermes/run/hermes-chrome/ — never commit)
 bridge.pid
 bridge.log
+mcp-snippet.json
+**/bridge.env
+**/.hermes/
 
 # Optional local notes
 .idea/
