@@ -44,8 +44,14 @@ No cloud account. No analytics. The extension does not send browsing data to rem
 **Note**
 This extension alone does not run an AI model and does not complete setup by itself. It is the browser half of a local agent workflow.
 
+**nativeMessaging (why)**
+Chrome does not let extensions open a local control port. After you install the companion from GitHub, the extension uses nativeMessaging only to talk to the local host `com.leaf76.hermes_chrome` on this computer so the bridge on 127.0.0.1:19876 can start when you click the icon—no remote host, no remote code.
+
 ## Category
 Productivity / Developer Tools
 
 ## Language
 English
+
+## CWS permission paste
+See `store/UPLOAD_GUIDE.md` → **Permission justifications** (nativeMessaging, host permissions, single purpose, reviewer notes).

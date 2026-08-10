@@ -94,6 +94,7 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 | **Data usage** | Does not sell or transfer user data to third parties. Does not use remote code. |
 | **Remote code** | **No** (localhost JSON bridge is not remote JS/Wasm). |
 | **Host permission justification** | (1) Localhost `127.0.0.1:19876` / `localhost:19876` — long-poll a user-run companion bridge. (2) `<all_urls>` — required by Chrome for optional `tabs.captureVisibleTab` when the local CLI asks to snapshot a tab (any normal page). Capture is triggered only by local bridge commands; PNG stays on-device. Not limited to any single third-party site. |
+| **nativeMessaging** | Talk to the user-installed local host `com.leaf76.hermes_chrome` only. Chrome does not allow extensions to open a listening control port; the host ensures the local bridge on 127.0.0.1:19876 is running when the user clicks the icon. No remote host, no remote code download. Path registered by the user’s companion installer (GitHub). Full text: `store/UPLOAD_GUIDE.md` → Permission justifications. |
 | **tabs** | Create/update/close agent workspace tabs without relying on the user’s active tab when possible. |
 | **tabGroups** | Default workspace isolation via a native Chrome Tab Group. |
 | **storage** | On-device settings only (bridge URL, title/color, polling). |
@@ -111,16 +112,20 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 ## Notes for reviewers
 
 ```
-Hermes Chrome is a local agent companion (v1.4.2).
-Host permissions: localhost bridge + <all_urls> for optional local tab capture only
+Hermes Chrome is a local agent companion (v1.8.1).
+Two parts: this extension (browser half) + one-time local companion from GitHub
+(install.sh registers Native Messaging host com.leaf76.hermes_chrome + bridge).
+Extension alone cannot open a control port — nativeMessaging only talks to that
+user-installed local host so the bridge on 127.0.0.1:19876 can auto-start on icon click.
+Host permissions: localhost bridge + <all_urls> for optional local tab capture
 (any site the CLI requests; PNG stays on-device; not site-locked).
 No remote code, no analytics, no cloud account.
-1. Install extension
-2. python3 bridge.py  (listen 127.0.0.1:19876)
-3. Click extension icon
-4. Use CLI: hermes-chrome.sh ping / start / list-tabs / capture / stop
+1. curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
+2. Install/reload this extension, click icon, Pair if needed
+3. CLI: hermes-chrome ping / open / list-tabs / capture / stop
 Repo: https://github.com/leaf76/hermes-chrome
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy
+Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.1
 ```
 
 ## Dashboard checklist (paste values)
@@ -129,9 +134,10 @@ Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy
 2. **Data types collected** → leave all unchecked  
 3. Check the three certification boxes (as shown in dashboard)  
 4. **Privacy policy URL** → https://leaf76.github.io/hermes-chrome/privacy-policy  
-5. **Alarms justification** → Wake MV3 SW to long-poll localhost bridge only  
-6. **Host permissions** → localhost bridge + `<all_urls>` for optional local capture (see above)  
-7. **scripting** → local bridge-command helpers only; on-device  
+5. **nativeMessaging** → paste block in `store/UPLOAD_GUIDE.md` (Permission justifications)  
+6. **Alarms justification** → Wake MV3 SW to long-poll localhost bridge only  
+7. **Host permissions** → localhost bridge + `<all_urls>` for optional local capture (see above)  
+8. **scripting** → local bridge-command helpers only; on-device  
 
 ## Your last step
 

@@ -43,5 +43,11 @@ Hermes Chrome 是**本機 agent companion**：讓 AI agent / CLI 操作你真實
 **注意**
 本擴充本身不執行 AI 模型，也**不能**單靠商店安裝完成設定。它是本機 agent 工作流的瀏覽器端元件。
 
+**為何需要 nativeMessaging**
+Chrome 不允許 extension 自己開本機控制 port。你從 GitHub 裝好 companion 後，extension 只用 nativeMessaging 連本機 host（`com.leaf76.hermes_chrome`），在點 icon 時確保 bridge（127.0.0.1:19876）有起來——沒有遠端 host、不下載遠端程式碼。
+
 ## 分類
 生產力 / 開發人員工具
+
+## CWS 權限貼上
+見 `store/UPLOAD_GUIDE.md` → **Permission justifications**（英文可直接貼後台）。
