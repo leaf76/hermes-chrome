@@ -119,6 +119,22 @@ python /path/to/hermes-chrome/mcp_server.py
 
 MCP：`hermes_chrome_open`，`{ "url": "https://example.com/" }`。
 
+### 用完關閉工作區（不是關 companion）
+
+**Hermes Tab Group 用完可關。** 任務結束後關掉 agent 分頁或 stop 工作區即可；  
+**本機 companion / bridge 請保留**，下次不用重裝、重 Pair。
+
+```bash
+# 關閉 agent 工作區分頁並清掉 group（CLI）
+./scripts/hermes-chrome.sh stop
+
+# 或在 Chrome 手動關分頁 / 整個 group — 一樣
+```
+
+MCP：`hermes_chrome_stop`（可選 `close_tabs: false` 只取消分組、不關分頁）。
+
+**不要**為了清分頁去 uninstall companion 或移除 extension。
+
 ### 列出分頁
 
 ```bash

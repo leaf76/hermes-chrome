@@ -1529,6 +1529,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
   }
+  // Close agent workspace Tab Group (tabs by default). Does not stop the local bridge.
+  if (msg?.type === "stop" || msg?.type === "stopWorkspace") {
+    stopGroup({ closeTabs: msg?.closeTabs !== false })
+      .then((r) => sendResponse({ ok: true, ...r }))
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+    return true;
+  }
   if (msg?.type === "getSettings") {
     getSettings().then((s) => {
       // Never echo full token to popup JSON dumps — mask for UI.

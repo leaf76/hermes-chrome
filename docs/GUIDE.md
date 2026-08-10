@@ -129,6 +129,22 @@ All examples are **generic**. Replace URLs with whatever you need.
 
 MCP: `hermes_chrome_open` with `{ "url": "https://example.com/" }`.
 
+### Close the workspace when done (not the companion)
+
+The **Hermes Tab Group is disposable**. When the task is finished, close agent tabs
+or stop the workspace — **keep the local companion / bridge running** for next time.
+
+```bash
+# Close agent workspace tabs + clear the group (CLI)
+./scripts/hermes-chrome.sh stop
+
+# Or close tabs/group manually in Chrome — same idea
+```
+
+MCP: `hermes_chrome_stop` (optional `close_tabs: false` only ungroups, leaves tabs open).
+
+Do **not** uninstall the companion or extension just to clean up tabs.
+
 ### List tabs
 
 ```bash

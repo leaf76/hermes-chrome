@@ -54,9 +54,9 @@ const els = {
   out: document.getElementById("out"),
 };
 
-/** @type {"refresh"|"pair"|"reconnect"|"guide"|"github"} */
+/** @type {"refresh"|"pair"|"reconnect"|"guide"|"github"|"stopWorkspace"} */
 let primaryAction = "refresh";
-/** @type {"pair"|"reconnect"|"guide"|"github"|"refresh"|null} */
+/** @type {"pair"|"reconnect"|"guide"|"github"|"refresh"|"stopWorkspace"|null} */
 let secondaryAction = null;
 
 function setBadge(el, ok, text) {
@@ -220,12 +220,24 @@ function updateUserFacing(s) {
     setDot("ok");
     if (els.summaryTitle) els.summaryTitle.textContent = "Connected";
     if (els.summaryDesc) {
-      els.summaryDesc.textContent = s.pairingOpen
-        ? "Local companion is running. Pairing window is still open (optional)."
-        : "Local companion is running. Agents can use this Chrome.";
+      if (s.pairingOpen) {
+        els.summaryDesc.textContent =
+          "Local companion is running. Pairing window is still open (optional).";
+      } else if (s.running) {
+        els.summaryDesc.textContent =
+          "Companion ready. Agent Tab Group is open — close it when the task is done (bridge stays up).";
+      } else {
+        els.summaryDesc.textContent =
+          "Local companion is running. Agents can open a workspace when needed.";
+      }
     }
     setPrimary("Refresh", "refresh");
-    setSecondary(null);
+    // Close agent workspace only (not the bridge)
+    if (s.running) {
+      setSecondary("Close workspace", "stopWorkspace");
+    } else {
+      setSecondary(null);
+    }
     return;
   }
 
@@ -430,6 +442,20 @@ async function runAction(action) {
   }
   if (action === "github") {
     openGithub();
+    return;
+  }
+  if (action === "stopWorkspace") {
+    const r = await chrome.runtime.sendMessage({
+      type: "stopWorkspace",
+      closeTabs: true,
+    });
+    if (els.summaryDesc) {
+      els.summaryDesc.textContent =
+        r && r.ok
+          ? `Workspace closed (${r.closed ?? 0} tab(s)). Companion still running.`
+          : (r && r.error) || "Could not close workspace.";
+    }
+    await refresh();
   }
 }
 

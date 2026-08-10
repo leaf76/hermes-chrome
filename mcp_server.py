@@ -52,7 +52,7 @@ BRIDGE_URL = f"http://{HOST}:{PORT}"
 ENV_FILE = RUN_DIR / "bridge.env"
 
 SERVER_NAME = "hermes-chrome"
-SERVER_VERSION = "1.7.0"
+SERVER_VERSION = "1.8.1"
 PROTOCOL_VERSION = "2024-11-05"
 
 _bridge_proc: subprocess.Popen | None = None
@@ -433,6 +433,27 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "hermes_chrome_stop",
+        "description": (
+            "Close the Hermes agent workspace Tab Group when the task is done "
+            "(closes tabs by default). Does NOT stop the local bridge/companion — "
+            "only cleans up agent tabs. Use after open/capture workflows."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "close_tabs": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "If true (default), close tabs in the workspace. "
+                        "If false, ungroup tabs but leave them open."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "hermes_chrome_navigate",
         "description": "Navigate a tab (or workspace default) to url.",
         "inputSchema": {
@@ -550,6 +571,14 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             if not url:
                 return _tool_result({"ok": False, "error": "url required"}, is_error=True)
             return _tool_result(send_command("open", {"url": url}))
+
+        if name == "hermes_chrome_stop":
+            close_tabs = args.get("close_tabs")
+            if close_tabs is None:
+                close_tabs = True
+            return _tool_result(
+                send_command("stop", {"closeTabs": bool(close_tabs)})
+            )
 
         if name == "hermes_chrome_navigate":
             url = str(args.get("url") or "")

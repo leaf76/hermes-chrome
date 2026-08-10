@@ -201,8 +201,15 @@ hermes-chrome.sh open 'https://github.com/'
 hermes-chrome.sh list-tabs --url example.com
 hermes-chrome.sh capture --prefer auto --out /tmp/page.png
 
+# When the task is done — close agent Tab Group only (keep companion)
+hermes-chrome.sh stop
+
 # JSON for agents
 hermes-chrome.sh --json ping</pre>
+        <p class="muted">
+          Closing the workspace does <strong>not</strong> stop the local bridge. Popup
+          <strong>Close workspace</strong> does the same when a group is open.
+        </p>
 
         <h2>4. Any agent (not only Grok)</h2>
         <table>
@@ -296,8 +303,15 @@ hermes-chrome.sh open 'https://github.com/'
 hermes-chrome.sh list-tabs --url example.com
 hermes-chrome.sh capture --prefer auto --out /tmp/page.png
 
+# 任務結束 — 只關 agent Tab Group（保留 companion）
+hermes-chrome.sh stop
+
 # 給 agent 的 JSON
 hermes-chrome.sh --json ping</pre>
+        <p class="muted">
+          關閉工作區<strong>不會</strong>停本機 bridge。Popup 有工作區時可按
+          <strong>Close workspace</strong>。
+        </p>
 
         <h2>4. 各種 agent（不限 Grok）</h2>
         <table data-lang="zh">

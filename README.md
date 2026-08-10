@@ -195,6 +195,7 @@ grok mcp add hermes-chrome -- /path/to/python3 /path/to/hermes-chrome/mcp_server
 
 MCP tools: `hermes_chrome_status`, `hermes_chrome_ping`, `hermes_chrome_list_tabs`,
 `hermes_chrome_list_tv`, `hermes_chrome_capture`, `hermes_chrome_open`,
+`hermes_chrome_stop` (close agent Tab Group when done — not the bridge),
 `hermes_chrome_navigate`, `hermes_chrome_eval`, `hermes_chrome_click`,
 `hermes_chrome_type`.
 
