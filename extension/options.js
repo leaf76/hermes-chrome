@@ -70,6 +70,40 @@ document.getElementById("save").onclick = async () => {
   await load();
 };
 
+document.getElementById("test").onclick = async () => {
+  const msg = document.getElementById("msg");
+  msg.textContent = "Testing connection…";
+  const s = await chrome.runtime.sendMessage({ type: "status" });
+  if (s && s.bridgeOk) {
+    if (s.bridgeAuth && !s.tokenSet) {
+      msg.textContent = "⚠️ Bridge reachable, but Token is required. Click 'Pair with bridge' or paste token.";
+    } else {
+      msg.textContent = `✓ Connected! Bridge online (${s.bridgeUrl}) · Polling: ${s.polling ? "active" : "idle"} · Workspace: ${s.running ? s.title || "Hermes" : "ready"}`;
+    }
+  } else {
+    msg.textContent = "✗ Bridge unreachable. Make sure companion is running or click 'Pair with bridge'.";
+  }
+};
+
+document.getElementById("copyMcp").onclick = async () => {
+  const btn = document.getElementById("copyMcp");
+  const msg = document.getElementById("msg");
+  const r = await chrome.runtime.sendMessage({ type: "getMcpConfig" });
+  if (r && r.json) {
+    try {
+      await navigator.clipboard.writeText(r.json);
+      const prev = btn.textContent;
+      btn.textContent = "Copied!";
+      msg.textContent = "Copied MCP JSON to clipboard. Paste into Cursor (~/.cursor/mcp.json) or Claude Desktop.";
+      setTimeout(() => {
+        btn.textContent = prev;
+      }, 2000);
+    } catch {
+      msg.textContent = "Failed to write clipboard. Please copy manually from ~/.hermes/run/hermes-chrome/mcp-snippet.json";
+    }
+  }
+};
+
 document.getElementById("reset").onclick = async () => {
   await chrome.runtime.sendMessage({ type: "setSettings", settings: DEFAULTS });
   await load();

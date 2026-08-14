@@ -38,7 +38,23 @@ Chrome 安全限制：光裝 extension **不能**對外開控制 port。請**先
 
 ## 一次設定
 
-### 1. 安裝 companion（每台機器一次）— 先做這步
+### 🤖 讓你的 AI 助理一鍵安裝（One-Shot Prompt）
+
+若你正在使用 AI 輔助開發工具（如 Cursor、Claude Desktop、Windsurf、Roo Code、ChatGPT、Antigravity 等），可以直接將下方 Prompt 貼給你的 AI：
+
+```text
+請幫我在這台電腦上安裝並配置 Hermes Chrome companion，以便你（AI）可以操作我的日常 Chrome：
+1. 偵測我的作業系統（macOS / Linux / Windows）。
+2. 安裝 Companion：
+   - macOS / Linux：執行 `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
+   - Windows：clone https://github.com/leaf76/hermes-chrome.git 並執行 `powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1`
+3. 確保 `~/.local/bin` 已加入 PATH（若無，請將 `export PATH="$HOME/.local/bin:$PATH"` 寫入我的 shell rc 檔案）。
+4. 執行 `hermes-chrome doctor` 驗證本地 Bridge 與 Companion 健康狀態。
+5. 若我使用 Cursor、Claude Desktop 或 Grok，請確認 MCP 設定已註冊（可參考 `~/.hermes/run/hermes-chrome/mcp-snippet.json`）。
+6. 最後提醒我到 Chrome 商店安裝 Hermes Chrome 擴充功能，並點擊一次圖示以完成配對。
+```
+
+### 1. 手動安裝 companion（每台機器一次）— 先做這步
 
 **建議（不必先 clone）：**
 

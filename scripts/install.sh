@@ -169,8 +169,13 @@ install_path_shim() {
   case ":$PATH:" in
     *":${BIN_DIR}:"*) ;;
     *)
-      log "note: add ${BIN_DIR} to PATH if 'hermes-chrome' is not found"
-      log "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+      local rc_file="$HOME/.zshrc"
+      if [[ "${SHELL:-}" == *"bash"* ]] || [[ ! -f "$HOME/.zshrc" && -f "$HOME/.bashrc" ]]; then
+        rc_file="$HOME/.bashrc"
+      fi
+      log "⚠️  Notice: ${BIN_DIR} is not in your current PATH."
+      log "   To use 'hermes-chrome' directly in Terminal, run:"
+      log "   echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> $rc_file && source $rc_file"
       ;;
   esac
 }

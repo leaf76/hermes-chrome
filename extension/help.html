@@ -164,11 +164,20 @@
         </div>
 
         <div class="card">
-          <strong>Works on any page.</strong> Open GitHub, docs, dashboards, news — whatever URL you pass.
-          Optional chart helpers exist but are not required.
+          <strong>🤖 Ask Your AI to Set It Up (One-Shot Prompt)</strong>
+          <p class="muted" style="margin: 4px 0 8px">Copy & paste this prompt to your AI assistant (Cursor, Claude Desktop, Windsurf, Roo Code, Antigravity, etc.):</p>
+          <pre>Please set up the Hermes Chrome companion on my machine for Chrome automation:
+1. Detect my OS (macOS/Linux/Windows).
+2. Install the companion:
+   - macOS / Linux: run `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
+   - Windows: clone https://github.com/leaf76/hermes-chrome.git and run `powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1`
+3. Ensure `~/.local/bin` is in my PATH (add `export PATH="$HOME/.local/bin:$PATH"` to my shell profile if missing).
+4. Run `hermes-chrome doctor` to verify companion and bridge health.
+5. If I use Cursor, Claude Desktop, or Grok, check that MCP is registered (~/.hermes/run/hermes-chrome/mcp-snippet.json).
+6. Remind me to install the Hermes Chrome extension from Chrome Web Store and click the extension icon once to connect.</pre>
         </div>
 
-        <h2>1. One-time companion install (do this first)</h2>
+        <h2>1. One-time companion install (manual)</h2>
         <p>
           The Chrome extension alone cannot open a control port (Chrome security). Install the companion
           once per machine <strong>before</strong> expecting Connected:
@@ -270,11 +279,20 @@ hermes-chrome.sh --json ping</pre>
         </div>
 
         <div class="card">
-          <strong>任何頁面都能用。</strong> GitHub、文件、後台、新聞……你開什麼 URL 就操作什麼。
-          圖表小工具是可選，不是主線。
+          <strong>🤖 讓你的 AI 助理一鍵安裝（One-Shot Prompt）</strong>
+          <p class="muted" style="margin: 4px 0 8px">將這段 Prompt 複製並貼給你的 AI 助理（Cursor、Claude Desktop、Windsurf、Roo Code、Antigravity 等）：</p>
+          <pre>請幫我在這台電腦上安裝並配置 Hermes Chrome companion，以便你（AI）可以操作我的日常 Chrome：
+1. 偵測我的作業系統（macOS / Linux / Windows）。
+2. 安裝 Companion：
+   - macOS / Linux：執行 `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
+   - Windows：clone https://github.com/leaf76/hermes-chrome.git 並執行 `powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1`
+3. 確保 `~/.local/bin` 已加入 PATH（若無，請將 `export PATH="$HOME/.local/bin:$PATH"` 寫入我的 shell rc 檔案）。
+4. 執行 `hermes-chrome doctor` 驗證本地 Bridge 與 Companion 健康狀態。
+5. 若我使用 Cursor、Claude Desktop 或 Grok，請確認 MCP 設定已註冊（可參考 `~/.hermes/run/hermes-chrome/mcp-snippet.json`）。
+6. 最後提醒我到 Chrome 商店安裝 Hermes Chrome 擴充功能，並點擊一次圖示以完成配對。</pre>
         </div>
 
-        <h2>1. 一次安裝 companion（先做這步）</h2>
+        <h2>1. 手動安裝 companion</h2>
         <p>光裝 extension 不能開控制 port（Chrome 安全模型）。每台電腦<strong>先</strong>裝一次 companion，再期待 Connected：</p>
         <pre># macOS / Linux（建議）
 curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash

@@ -231,6 +231,29 @@ async function openInGroup(url, { newTab = false } = {}) {
 }
 
 /**
+ * Send a one-shot message to the Native Messaging host.
+ */
+function sendNativeMessageAsync(msg) {
+  return new Promise((resolve) => {
+    if (!chrome.runtime.sendNativeMessage) {
+      resolve({ ok: false, error: "nativeMessaging API unavailable" });
+      return;
+    }
+    try {
+      chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, msg, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          resolve(response || { ok: true });
+        }
+      });
+    } catch (e) {
+      resolve({ ok: false, error: String(e?.message || e) });
+    }
+  });
+}
+
+/**
  * Ask the OS-registered Native Messaging host to ensure the local bridge is up.
  * No-op (with status error) when the companion is not installed.
  */
@@ -963,9 +986,9 @@ async function evalInTab(cmd) {
   }
   if (expression.length > 8000) throw new Error("expression too long (max 8000)");
 
-  // Default ISOLATED world; MAIN only when explicitly requested (page JS access).
+  // Default MAIN world for DOM/page execution; ISOLATED when requested.
   const world =
-    cmd.world === "MAIN" || cmd.mainWorld === true ? "MAIN" : "ISOLATED";
+    cmd.world === "ISOLATED" ? "ISOLATED" : "MAIN";
 
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
@@ -1307,15 +1330,41 @@ async function postHello(bridge) {
 async function pairWithBridge() {
   const settings = await getSettings();
   const bridge = settings.bridgeUrl || DEFAULT_BRIDGE;
-  const res = await fetch(`${bridge}/v1/pair`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-    cache: "no-store",
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok || !body.ok || !body.token) {
-    throw new Error(body.error || `pair failed HTTP ${res.status}`);
+  let res = null;
+  let body = {};
+
+  try {
+    res = await fetch(`${bridge}/v1/pair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      cache: "no-store",
+    });
+    body = await res.json().catch(() => ({}));
+  } catch {
+    res = null;
+  }
+
+  // If pairing closed or bridge down, ask native host to re-open pairing / start bridge and retry
+  if (!res || !res.ok || !body.ok || !body.token) {
+    const nativeRes = await sendNativeMessageAsync({ action: "pair_open" });
+    if (nativeRes && (nativeRes.ok || nativeRes.action === "pair_open")) {
+      try {
+        res = await fetch(`${bridge}/v1/pair`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+          cache: "no-store",
+        });
+        body = await res.json().catch(() => ({}));
+      } catch {
+        res = null;
+      }
+    }
+  }
+
+  if (!res || !res.ok || !body.ok || !body.token) {
+    throw new Error(body.error || (res ? `pair failed HTTP ${res.status}` : "bridge offline"));
   }
   const next = {
     ...settings,
@@ -1528,6 +1577,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
+  }
+  if (msg?.type === "getMcpConfig") {
+    const rootHint = "~/.hermes/hermes-chrome";
+    const mcpConfig = {
+      mcpServers: {
+        "hermes-chrome": {
+          command: "python3",
+          args: [`${rootHint}/mcp_server.py`],
+          env: {
+            HERMES_CHROME_ROOT: rootHint,
+          },
+        },
+      },
+    };
+    sendResponse({
+      ok: true,
+      json: JSON.stringify(mcpConfig, null, 2),
+      cursorJson: JSON.stringify(mcpConfig, null, 2),
+      claudeJson: JSON.stringify(mcpConfig, null, 2),
+      grokToml: `[mcp_servers.hermes-chrome]\ncommand = "python3"\nargs = ["${rootHint}/mcp_server.py"]\nenabled = true\nstartup_timeout_sec = 45\ntool_timeout_sec = 120\n\n[mcp_servers.hermes-chrome.env]\nHERMES_CHROME_ROOT = "${rootHint}"`,
+    });
+    return false;
   }
   // Close agent workspace Tab Group (tabs by default). Does not stop the local bridge.
   if (msg?.type === "stop" || msg?.type === "stopWorkspace") {

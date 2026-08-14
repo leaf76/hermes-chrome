@@ -53,8 +53,11 @@
             Needs <strong>Python 3</strong> and <strong>git</strong>.
           </p>
           <div class="step-links">
+            <button type="button" class="btn-link" id="btnCopyAiPrompt">
+              🤖 Copy AI Prompt
+            </button>
             <a
-              class="btn-link"
+              class="btn-link ghost"
               href="https://github.com/leaf76/hermes-chrome"
               target="_blank"
               rel="noopener"
@@ -72,9 +75,7 @@
           </p>
           <div class="cmd-box">
             <code id="setupCmd"
-              >git clone https://github.com/leaf76/hermes-chrome.git
-cd hermes-chrome
-./scripts/hermes-chrome.sh install-for-agent</code
+              >curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash</code
             >
             <button type="button" class="btn-copy" id="btnCopyCmd" title="Copy command">
               Copy
@@ -120,6 +121,8 @@ cd hermes-chrome
       <button type="button" id="btnGuide" class="text-btn">Guide</button>
       <span class="dot-sep" aria-hidden="true">·</span>
       <button type="button" id="btnOptions" class="text-btn">Options</button>
+      <span class="dot-sep" aria-hidden="true">·</span>
+      <button type="button" id="btnCopyMcp" class="text-btn">Copy MCP</button>
       <span class="dot-sep" aria-hidden="true">·</span>
       <button type="button" id="btnReconnect" class="text-btn">Reconnect</button>
     </section>

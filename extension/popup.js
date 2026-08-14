@@ -1,17 +1,24 @@
 const REPO = "https://github.com/leaf76/hermes-chrome";
-const CMD_INSTALL = [
-  "# Recommended one-liner (installs to ~/.hermes/hermes-chrome)",
-  "curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash",
-].join("\n");
-const CMD_INSTALL_ALT = [
-  "# Or clone then install:",
-  "git clone https://github.com/leaf76/hermes-chrome.git",
-  "cd hermes-chrome && ./scripts/install.sh --dev",
-].join("\n");
+const CMD_INSTALL =
+  "curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash";
+const CMD_INSTALL_ALT =
+  "git clone https://github.com/leaf76/hermes-chrome.git && cd hermes-chrome && ./scripts/install.sh --dev";
 const CMD_PAIR_ONLY = "hermes-chrome pair-open";
 // If PATH shim not installed yet:
 const CMD_PAIR_FALLBACK =
   "~/.hermes/hermes-chrome/scripts/hermes-chrome.sh pair-open";
+
+const AI_INSTALL_PROMPT = [
+  "Please set up the Hermes Chrome companion on my machine for Chrome automation:",
+  "1. Detect my OS (macOS/Linux/Windows).",
+  "2. Install the companion:",
+  "   - macOS / Linux: run `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`",
+  "   - Windows: clone https://github.com/leaf76/hermes-chrome.git and run `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-windows.ps1`",
+  "3. Ensure `~/.local/bin` is in my PATH (add `export PATH=\"$HOME/.local/bin:$PATH\"` to my shell profile if missing).",
+  "4. Run `hermes-chrome doctor` to verify companion and bridge health.",
+  "5. If I use Cursor, Claude Desktop, or Grok, check that MCP is registered (~/.hermes/run/hermes-chrome/mcp-snippet.json).",
+  "6. Remind me to install the Hermes Chrome extension from Chrome Web Store and click the extension icon once to connect.",
+].join("\n");
 
 const els = {
   statusDot: document.getElementById("statusDot"),
@@ -38,9 +45,11 @@ const els = {
   btnSecondary: document.getElementById("btnSecondary"),
   btnCopyCmd: document.getElementById("btnCopyCmd"),
   btnCopyPair: document.getElementById("btnCopyPair"),
+  btnCopyAiPrompt: document.getElementById("btnCopyAiPrompt"),
   btnSetupGuide: document.getElementById("btnSetupGuide"),
   btnGuide: document.getElementById("btnGuide"),
   btnOptions: document.getElementById("btnOptions"),
+  btnCopyMcp: document.getElementById("btnCopyMcp"),
   btnReconnect: document.getElementById("btnReconnect"),
   bridgeBadge: document.getElementById("bridgeBadge"),
   pollBadge: document.getElementById("pollBadge"),
@@ -54,9 +63,9 @@ const els = {
   out: document.getElementById("out"),
 };
 
-/** @type {"refresh"|"pair"|"reconnect"|"guide"|"github"|"stopWorkspace"} */
+/** @type {"refresh"|"pair"|"reconnect"|"guide"|"github"|"stopWorkspace"|"copyCmd"} */
 let primaryAction = "refresh";
-/** @type {"pair"|"reconnect"|"guide"|"github"|"refresh"|"stopWorkspace"|null} */
+/** @type {"pair"|"reconnect"|"guide"|"github"|"refresh"|"stopWorkspace"|"copyCmd"|null} */
 let secondaryAction = null;
 
 function setBadge(el, ok, text) {
@@ -263,7 +272,7 @@ function updateUserFacing(s) {
           "Needs Python 3 + git · Source: github.com/leaf76/hermes-chrome · " +
           "MCP is optional (same install, not a separate store).",
       });
-      setPrimary("Open GitHub", "github");
+      setPrimary("Copy Install Command", "copyCmd");
       setSecondary("Full guide", "guide");
       return;
     }
@@ -436,6 +445,10 @@ async function runAction(action) {
     await refresh();
     return;
   }
+  if (action === "copyCmd") {
+    await copyText(els.setupCmd ? els.setupCmd.textContent : CMD_INSTALL, els.btnPrimary);
+    return;
+  }
   if (action === "guide") {
     openGuide();
     return;
@@ -487,12 +500,24 @@ if (els.btnSetupGuide) els.btnSetupGuide.onclick = openGuide;
 if (els.btnOptions) {
   els.btnOptions.onclick = () => chrome.runtime.openOptionsPage();
 }
+if (els.btnCopyMcp) {
+  els.btnCopyMcp.onclick = async () => {
+    const r = await chrome.runtime.sendMessage({ type: "getMcpConfig" });
+    if (r && r.json) {
+      await copyText(r.json, els.btnCopyMcp);
+    }
+  };
+}
 if (els.btnReconnect) {
   els.btnReconnect.onclick = () => runAction("reconnect");
 }
 if (els.btnCopyCmd) {
   els.btnCopyCmd.onclick = () =>
     copyText(els.setupCmd ? els.setupCmd.textContent : CMD_INSTALL, els.btnCopyCmd);
+}
+if (els.btnCopyAiPrompt) {
+  els.btnCopyAiPrompt.onclick = () =>
+    copyText(AI_INSTALL_PROMPT, els.btnCopyAiPrompt);
 }
 if (els.btnCopyPair) {
   els.btnCopyPair.onclick = () =>

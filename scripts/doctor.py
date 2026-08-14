@@ -106,7 +106,13 @@ def check() -> dict[str, Any]:
 
     # PATH shim
     shim = Path.home() / ".local" / "bin" / "hermes-chrome"
-    add("PATH shim ~/.local/bin/hermes-chrome", shim.is_file() or bool(shutil.which("hermes-chrome")), str(shim))
+    on_path = bool(shutil.which("hermes-chrome"))
+    shim_exists = shim.is_file()
+    add("PATH shim ~/.local/bin/hermes-chrome", shim_exists or on_path, str(shim))
+    if shim_exists and not on_path:
+        report["hints"].append(
+            '~/.local/bin is not in your current PATH. Add it via: echo \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc'
+        )
 
     # Bridge HTTP
     host = os.environ.get("HERMES_CHROME_BRIDGE_HOST", "127.0.0.1")

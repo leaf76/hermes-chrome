@@ -32,7 +32,7 @@ from bridge_runtime import (  # noqa: E402
     log,
 )
 
-HOST_VERSION = "1.7.0"
+HOST_VERSION = "1.8.2"
 
 
 def read_message() -> dict | None:
@@ -71,6 +71,12 @@ def handle(msg: dict) -> dict:
         h["host"] = NATIVE_HOST_NAME
         h["host_version"] = HOST_VERSION
         h["root"] = str(ROOT)
+        return h
+    if action in ("pair_open", "pair-open", "open_pair", "pair"):
+        h = ensure_and_pair(timeout_s=10.0, log_name="bridge.native.log", prefix="native-host")
+        h["host"] = NATIVE_HOST_NAME
+        h["host_version"] = HOST_VERSION
+        h["action"] = "pair_open"
         return h
     # default: ensure bridge + open pairing
     h = ensure_and_pair(timeout_s=10.0, log_name="bridge.native.log", prefix="native-host")
