@@ -28,6 +28,8 @@ popup **Setup needed** when companion/bridge is missing.
 - Manifest still needs `<all_urls>` for capture/scripting on normal pages; bridge
   host_permissions stay on `127.0.0.1` / `localhost:19876`.
 - Do not commit runtime pid/log, `bridge.env`, or browser profiles.
+- Scripting DOM eval: MV3 ISOLATED world blocks `Function()`/`eval()` due to extension CSP.
+  Always default to `world: "MAIN"` for arbitrary page expressions.
 - Bump `extension/manifest.json` version for CWS updates; run `store/package.sh`.
 - User-facing plans: Traditional Chinese. Code / store EN / UI strings: English.
 - Sensitive defaults: workspace-only tabs, private-host block, token required.
@@ -59,6 +61,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' \
 - Bridge security (v1.8.2+): pair/CORS allowlist that id; no query token by default;
   no auto-reopen pairing unless `HERMES_CHROME_AUTO_REPAIR=1`; health detail needs token.
   See `docs/THREAT-MODEL.md`.
+- Pairing UX: Extension auto-rescues expired pairing via Native Host `pair_open` action
+  without forcing manual terminal `pair-open` roundtrips.
+- AI Onboarding: Maintain cross-platform One-Shot AI Prompts in README/docs/popup for seamless AI setup.
 - `mcp_server.py` + HTTP bridge are **agent-agnostic** — not Grok-only.
 - `mcp_server.py` / `native_host/host.py` / `lib/bridge_runtime.py` stay **stdlib-only**.
 - Do not claim “install CWS only”; honest UX is “companion once + CWS”.
