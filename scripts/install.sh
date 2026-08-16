@@ -121,7 +121,6 @@ ensure_source_tree() {
     mkdir -p "$INSTALL_ROOT"
     if command -v rsync >/dev/null 2>&1; then
       rsync -a --delete \
-        --exclude '.git/' \
         --exclude '__pycache__/' \
         --exclude '*.pyc' \
         --exclude 'store/dist/' \
@@ -132,7 +131,7 @@ ensure_source_tree() {
       rm -rf "${INSTALL_ROOT}.tmp"
       mkdir -p "${INSTALL_ROOT}.tmp"
       tar -C "$LOCAL_ROOT" \
-        --exclude '.git' --exclude '__pycache__' --exclude 'store/dist' \
+        --exclude '__pycache__' --exclude 'store/dist' \
         -cf - . | tar -C "${INSTALL_ROOT}.tmp" -xf -
       rm -rf "$INSTALL_ROOT"
       mv "${INSTALL_ROOT}.tmp" "$INSTALL_ROOT"

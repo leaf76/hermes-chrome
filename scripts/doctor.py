@@ -45,6 +45,7 @@ def resolve_root() -> Path:
 
 
 def check(*, check_update: bool = True) -> dict[str, Any]:
+    root = resolve_root()
     run = Path(
         os.environ.get("HERMES_CHROME_RUN")
         or Path.home() / ".hermes" / "run" / "hermes-chrome"

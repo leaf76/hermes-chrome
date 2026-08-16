@@ -3,8 +3,8 @@
 Package: `store/dist/` (run `./store/package.sh`)  
 **Submission pack (preferred):** `store/submission-pack/` — zip + FILL.md + assets + 送審檢查表.txt
 
-Current version: **1.8.4** → `hermes-chrome-v1.8.4.zip`
-(GitHub Release asset: `hermes-chrome-extension-v1.8.4.zip` — same package)
+Current version: **1.8.5** → `hermes-chrome-v1.8.5.zip`
+(GitHub Release asset: `hermes-chrome-extension-v1.8.5.zip` — same package)
 
 ## Before upload
 
@@ -15,7 +15,7 @@ Current version: **1.8.4** → `hermes-chrome-v1.8.4.zip`
 
 2. Reload unpacked extension from this repo’s `extension/` and smoke-test:
    ```bash
-   hermes-chrome --json bridge-status   # extension_connected + version 1.8.4
+   hermes-chrome --json bridge-status   # extension_connected + version 1.8.5
    hermes-chrome --json ping
    hermes-chrome stop                   # closes agent workspace only
    ```
@@ -28,8 +28,8 @@ Current version: **1.8.4** → `hermes-chrome-v1.8.4.zip`
 1. Open https://chrome.google.com/webstore/devconsole (login as the publisher account)
 2. Click existing **Hermes Chrome** item (or Create new item)
 3. **Package** → Upload new package:
-   - Local: `store/dist/hermes-chrome-v1.8.4.zip`
-   - Or download: https://github.com/leaf76/hermes-chrome/releases/download/v1.8.4/hermes-chrome-extension-v1.8.4.zip
+   - Local: `store/dist/hermes-chrome-v1.8.5.zip`
+   - Or download: https://github.com/leaf76/hermes-chrome/releases/download/v1.8.5/hermes-chrome-extension-v1.8.5.zip
 4. **Store listing**
    - Short description → from `listing-en.md` (≤132 chars)
    - Detailed description → full detailed block from `listing-en.md`
@@ -101,7 +101,7 @@ Requires a separately installed local bridge; this package is the browser half o
 ## Reviewer notes (paste)
 
 ```
-Hermes Chrome is a local agent companion (v1.8.4).
+Hermes Chrome is a local agent companion (v1.8.5).
 Two parts: this extension (browser half) + one-time local companion from GitHub
 (install.sh registers Native Messaging host com.leaf76.hermes_chrome + bridge).
 Extension alone cannot open a control port (Chrome security) — that is why
@@ -116,7 +116,7 @@ No remote code, no analytics, no cloud account.
 3. CLI: hermes-chrome ping / open / list-tabs / capture / stop
 Repo: https://github.com/leaf76/hermes-chrome
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy
-Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.4
+Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.5
 ```
 
 ## Version bumps
