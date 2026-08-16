@@ -233,6 +233,11 @@ fi
 log "running doctor…"
 "$PYTHON3" "${INSTALL_ROOT}/scripts/doctor.py" || true
 
+if [[ "$DEV_MODE" != "1" ]]; then
+  log "enabling companion auto-update (git ff-only from GitHub; disable: hermes-chrome self-update disable)"
+  "$PYTHON3" "${INSTALL_ROOT}/lib/self_update.py" enable || true
+fi
+
 cat <<EOF
 
 ══════════════════════════════════════════════════════════

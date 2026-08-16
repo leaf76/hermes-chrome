@@ -38,7 +38,7 @@
 | Auto-reopen pairing | **Off** by default; `HERMES_CHROME_AUTO_REPAIR=1` to enable |
 | `/v1/health` | Public = liveness only; full detail needs token |
 | Download / check-url | Block private/link-local hosts by default (`policy.py`) |
-| eval | ISOLATED world by default; MAIN opt-in |
+| eval | MAIN world by default; ISOLATED opt-in |
 | Workspace | Sensitive ops require Hermes group unless Options opt-in |
 | ALLOW_NO_AUTH | Explicit footgun; not default |
 
@@ -55,6 +55,7 @@
 3. Prefer official CWS extension + official GitHub install.
 4. After first pair, use stored token; run `pair-open` only when re-linking.
 5. Close agent workspace with `hermes-chrome stop` when done (does not remove token).
+6. Companion auto-update (if enabled) only fast-forwards `github.com/leaf76/hermes-chrome`; disable with `hermes-chrome self-update disable` or `HERMES_CHROME_AUTO_UPDATE=0`.
 
 ## Related
 

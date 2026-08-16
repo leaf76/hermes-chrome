@@ -21,6 +21,14 @@
 
 If the popup shows **Setup required**, the companion is missing or the bridge is down — follow the command in the popup (or section 1 below). That is expected when only the store package is installed.
 
+### Updates
+
+**Extension** updates via the Chrome Web Store.
+
+**Companion** (non `--dev` installs) auto-updates daily from the official GitHub
+remote (fast-forward only). Disable: `hermes-chrome self-update disable`.
+Manual: `hermes-chrome self-update now`. Popup still warns if the two halves drift.
+
 ---
 
 ## What it is (and is not)
@@ -107,7 +115,7 @@ Packaging notes: [PACKAGING.md](./PACKAGING.md)
 
 ### 2. Install / enable the extension
 
-- Chrome Web Store **or** Load unpacked → `extension/` (v1.7+)
+- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **or** Load unpacked → `extension/` (v1.8.3)
 - Accept **nativeMessaging** if prompted
 - **Reload** the extension → **click the icon once**
 - Wait for auto-pair, or press **Pair** in the popup

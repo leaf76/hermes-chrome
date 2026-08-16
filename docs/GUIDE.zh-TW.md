@@ -21,6 +21,14 @@
 
 若 popup 顯示 **Setup required**，代表還沒裝 companion 或 bridge 沒起來 — 照 popup 上的指令（或下方第 1 步）即可。**只裝商店版時出現這個畫面是正常的。**
 
+### 更新
+
+**擴充**由 Chrome 線上應用程式商店自動更新。
+
+**Companion**（非 `--dev` 安裝）每天會從官方 GitHub remote **fast-forward** 更新。
+關閉：`hermes-chrome self-update disable`。立刻更新：`hermes-chrome self-update now`。
+兩半版本不一致時 popup 仍會提醒。
+
 ---
 
 ## 它是什麼 / 不是什麼
@@ -97,7 +105,7 @@ MCP 片段：`~/.hermes/run/hermes-chrome/mcp-snippet.json`
 
 ### 2. 安裝 / 啟用 extension
 
-- Chrome Web Store **或** Load unpacked → `extension/`（v1.7+）
+- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **或** Load unpacked → `extension/`（v1.8.3）
 - 需要時允許 **nativeMessaging**
 - **重新載入** extension → **點一下 icon**
 - 等 auto-pair，或按 popup 的 **Pair**

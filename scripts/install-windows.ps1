@@ -224,6 +224,12 @@ if (Test-Path $doctor) {
   & $py $doctor
 }
 
+$upd = Join-Path $Root "lib\self_update.py"
+if (Test-Path $upd) {
+  Write-Info "enabling companion auto-update (git ff-only; disable: hermes-chrome self-update disable)"
+  & $py $upd enable
+}
+
 Write-Host ""
 Write-Host "=== Companion (machine half) installed ===" -ForegroundColor Cyan
 Write-Host "Root:    $Root"

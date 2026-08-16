@@ -1,6 +1,6 @@
-# Chrome Web Store — paste pack (Hermes Chrome v1.4.2)
+# Chrome Web Store — paste pack (Hermes Chrome v1.8.3)
 
-Use with zip: `hermes-chrome-v1.4.2.zip`  
+Use with zip: `hermes-chrome-v1.8.3.zip`  
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy  
 Support / homepage: https://github.com/leaf76/hermes-chrome
 
@@ -112,7 +112,7 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 ## Notes for reviewers
 
 ```
-Hermes Chrome is a local agent companion (v1.8.1).
+Hermes Chrome is a local agent companion (v1.8.3).
 Two parts: this extension (browser half) + one-time local companion from GitHub
 (install.sh registers Native Messaging host com.leaf76.hermes_chrome + bridge).
 Extension alone cannot open a control port — nativeMessaging only talks to that
@@ -125,7 +125,7 @@ No remote code, no analytics, no cloud account.
 3. CLI: hermes-chrome ping / open / list-tabs / capture / stop
 Repo: https://github.com/leaf76/hermes-chrome
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy
-Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.1
+Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.3
 ```
 
 ## Dashboard checklist (paste values)

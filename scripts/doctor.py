@@ -27,6 +27,8 @@ if str(_ROOT_GUESS / "lib") not in sys.path:
 if str(_ROOT_GUESS) not in sys.path:
     sys.path.insert(0, str(_ROOT_GUESS))
 
+from version_util import fetch_latest_tag, product_version, update_report  # noqa: E402
+
 
 def fixed_install_root() -> Path:
     return Path.home() / ".hermes" / "hermes-chrome"
@@ -42,8 +44,7 @@ def resolve_root() -> Path:
     return _ROOT_GUESS.resolve()
 
 
-def check() -> dict[str, Any]:
-    root = resolve_root()
+def check(*, check_update: bool = True) -> dict[str, Any]:
     run = Path(
         os.environ.get("HERMES_CHROME_RUN")
         or Path.home() / ".hermes" / "run" / "hermes-chrome"
@@ -119,8 +120,22 @@ def check() -> dict[str, Any]:
     port = int(os.environ.get("HERMES_CHROME_BRIDGE_PORT", "19876"))
     url = f"http://{host}:{port}/v1/health"
     health: dict[str, Any] = {}
+    headers: dict[str, str] = {}
+    if env_file.is_file():
+        try:
+            for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if line.startswith("export "):
+                    line = line[7:]
+                if line.startswith("HERMES_CHROME_BRIDGE_TOKEN="):
+                    tok = line.split("=", 1)[1].strip().strip("'").strip('"')
+                    if tok:
+                        headers["X-Hermes-Chrome-Token"] = tok
+                    break
+        except OSError:
+            pass
     try:
-        req = Request(url, method="GET")
+        req = Request(url, method="GET", headers=headers)
         with urlopen(req, timeout=2) as resp:
             health = json.loads(resp.read().decode("utf-8"))
         add("bridge :19876", True, url)
@@ -146,6 +161,29 @@ def check() -> dict[str, Any]:
     snip = run / "mcp-snippet.json"
     add("mcp snippet", snip.is_file(), str(snip))
 
+    local_ver = product_version(root)
+    ext_ver = None
+    if isinstance(health, dict):
+        ext_ver = health.get("extension_version")
+        if health.get("companion_version"):
+            local_ver = str(health.get("companion_version"))
+    skip_upd = (not check_update) or os.environ.get("HERMES_CHROME_SKIP_UPDATE_CHECK") == "1"
+    latest = None if skip_upd else fetch_latest_tag()
+    upd = update_report(local=local_ver, latest_tag=latest, extension=ext_ver)
+    report["version"] = upd
+    add("companion version", True, local_ver)
+    add(
+        "updates",
+        not upd["hints"],
+        f"github={latest or 'skipped'} extension={ext_ver or 'unknown'}",
+    )
+    try:
+        from self_update import is_enabled as _au_on
+
+        add("companion auto-update", True, "enabled" if _au_on() else "disabled")
+    except Exception:  # noqa: BLE001
+        add("companion auto-update", True, "unknown")
+
     critical_ok = all(
         c["ok"]
         for c in report["checks"]
@@ -157,14 +195,20 @@ def check() -> dict[str, Any]:
     report["python_which"] = py_which
     if report["ready"]:
         report["hints"] = ["All good — agents can use CLI or MCP."]
+    report["hints"].extend(upd["hints"])
     return report
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Hermes Chrome doctor")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument(
+        "--skip-update",
+        action="store_true",
+        help="Do not query GitHub Releases for a newer companion",
+    )
     args = ap.parse_args()
-    report = check()
+    report = check(check_update=not args.skip_update)
     if args.json:
         print(json.dumps(report, indent=2))
     else:
@@ -174,7 +218,7 @@ def main() -> int:
         print(f"  fixed:    {report['fixed_install']} (in use: {report['using_fixed_install']})")
         print()
         for c in report["checks"]:
-            mark = "OK " if c["ok"] else "FAIL"
+            mark = "OK " if c["ok"] else ("WARN" if c["name"] == "updates" else "FAIL")
             print(f"  [{mark}] {c['name']}: {c['detail']}")
         print()
         print("ready:" if report["ready"] else "not ready:")

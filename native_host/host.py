@@ -31,8 +31,9 @@ from bridge_runtime import (  # noqa: E402
     health,
     log,
 )
+from version_util import product_version  # noqa: E402
 
-HOST_VERSION = "1.8.2"
+HOST_VERSION = product_version(ROOT)
 
 
 def read_message() -> dict | None:

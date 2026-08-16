@@ -32,7 +32,7 @@ hermes-chrome doctor
 
 ## What you still need
 
-1. **Chrome extension** — Chrome Web Store or Load unpacked  
+1. **Chrome extension** — [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) or Load unpacked  
 2. **Python 3.9+** (and **git** for the full one-liner path)  
 3. Click extension icon → **Connected** / Pair  
 

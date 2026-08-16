@@ -41,6 +41,9 @@ ROOT = Path(
     os.environ.get("HERMES_CHROME_ROOT")
     or Path(__file__).resolve().parent
 ).resolve()
+if str(ROOT / "lib") not in sys.path:
+    sys.path.insert(0, str(ROOT / "lib"))
+from version_util import mismatch, product_version  # noqa: E402
 BRIDGE_PY = ROOT / "bridge.py"
 RUN_DIR = Path(
     os.environ.get("HERMES_CHROME_RUN")
@@ -52,8 +55,26 @@ BRIDGE_URL = f"http://{HOST}:{PORT}"
 ENV_FILE = RUN_DIR / "bridge.env"
 
 SERVER_NAME = "hermes-chrome"
-SERVER_VERSION = "1.8.1"
+SERVER_VERSION = product_version(ROOT)
 PROTOCOL_VERSION = "2024-11-05"
+
+# Agent-facing payloads: keep context small; never echo secrets or PNG bytes.
+AGENT_JSON_MAX = 12_000
+EVAL_VALUE_MAX = 4_000
+TAB_TITLE_MAX = 120
+TAB_URL_MAX = 240
+DEFAULT_TAB_LIMIT = 40
+_DROP_KEYS = frozenset(
+    {
+        "pngBase64",
+        "png_base64",
+        "token",
+        "bridgeToken",
+        "authorization",
+        "nativeHostPath",
+        "pid",
+    }
+)
 
 _bridge_proc: subprocess.Popen | None = None
 
@@ -62,6 +83,109 @@ def _log(msg: str) -> None:
     """MCP stdio uses stdout for protocol; logs go to stderr."""
     sys.stderr.write(f"[hermes-chrome-mcp] {msg}\n")
     sys.stderr.flush()
+
+
+def _ellipsis(s: str, n: int) -> str:
+    if len(s) <= n:
+        return s
+    if n <= 1:
+        return "…"
+    return s[: n - 1] + "…"
+
+
+def strip_secrets(obj: Any) -> Any:
+    """Drop tokens / PNG base64 / host paths from anything returned to an agent."""
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            kl = str(k).lower()
+            if k in _DROP_KEYS or kl in {"token", "pngbase64", "authorization"}:
+                continue
+            out[k] = strip_secrets(v)
+        return out
+    if isinstance(obj, list):
+        return [strip_secrets(x) for x in obj]
+    return obj
+
+
+def compact_health(h: dict[str, Any]) -> dict[str, Any]:
+    """One-glance status; internals stay out of the prompt unless not ready."""
+    ready = bool(h.get("extension_connected"))
+    if ready:
+        out: dict[str, Any] = {"ok": True, "ready": True}
+        if h.get("auth") is not None:
+            out["auth"] = h.get("auth")
+        drift = mismatch(h.get("companion_version"), h.get("extension_version"))
+        if drift:
+            out["update"] = drift
+        return strip_secrets(out)
+    out = {
+        "ok": False,
+        "ready": False,
+        "error": h.get("error") or "extension_disconnected",
+        "hint": h.get("hint")
+        or "Companion + Chrome extension, then click the icon once.",
+    }
+    if "pairing_open" in h:
+        out["pairing_open"] = h.get("pairing_open")
+    if h.get("auth") is not None:
+        out["auth"] = h.get("auth")
+    return strip_secrets(out)
+
+
+def compact_tabs(data: dict[str, Any], *, limit: int | None = None) -> dict[str, Any]:
+    cap = limit if limit is not None else DEFAULT_TAB_LIMIT
+    cap = max(1, min(int(cap), 80))
+    tabs_out: list[dict[str, Any]] = []
+    for t in data.get("tabs") or []:
+        if not isinstance(t, dict):
+            continue
+        tabs_out.append(
+            {
+                "id": t.get("id") if t.get("id") is not None else t.get("tabId"),
+                "title": _ellipsis(str(t.get("title") or ""), TAB_TITLE_MAX),
+                "url": _ellipsis(str(t.get("url") or ""), TAB_URL_MAX),
+                "active": bool(t.get("active")),
+            }
+        )
+        if len(tabs_out) >= cap:
+            break
+    return {"ok": True, "n": len(tabs_out), "tabs": tabs_out}
+
+
+def compact_nav(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": data.get("ok", True) is not False,
+        "tabId": data.get("tabId") if data.get("tabId") is not None else data.get("id"),
+        "url": _ellipsis(str(data.get("url") or ""), TAB_URL_MAX),
+        "mode": data.get("mode"),
+    }
+
+
+def compact_eval(data: dict[str, Any]) -> dict[str, Any]:
+    val: Any = data.get("value") if "value" in data else data.get("result", data)
+    if isinstance(val, str) and len(val) > EVAL_VALUE_MAX:
+        val = val[:EVAL_VALUE_MAX] + "…"
+    elif isinstance(val, (dict, list)):
+        raw = json.dumps(val, ensure_ascii=False, separators=(",", ":"))
+        if len(raw) > EVAL_VALUE_MAX:
+            val = raw[:EVAL_VALUE_MAX] + "…"
+    out: dict[str, Any] = {"ok": data.get("ok", True) is not False, "value": val}
+    if data.get("tabId") is not None:
+        out["tabId"] = data.get("tabId")
+    if data.get("error"):
+        out["ok"] = False
+        out["error"] = data.get("error")
+    return out
+
+
+def cap_json(obj: Any, budget: int = AGENT_JSON_MAX) -> Any:
+    obj = strip_secrets(obj)
+    raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    if len(raw) <= budget:
+        return obj
+    preview = raw[: max(0, budget - 24)] + "…"
+    return {"ok": False, "truncated": True, "chars": len(raw), "preview": preview}
 
 
 def _load_token() -> str:
@@ -340,9 +464,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "hermes_chrome_status",
         "description": (
-            "Hermes Chrome bridge + extension health. "
-            "Starts the local bridge if needed. "
-            "Check extension_connected before other ops."
+            "Hermes Chrome health. Check ready=true before other ops."
         ),
         "inputSchema": {
             "type": "object",
@@ -357,15 +479,14 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "hermes_chrome_ping",
-        "description": "End-to-end ping through the Chrome extension (requires extension_connected).",
+        "description": "Ping via the extension. Requires ready=true.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "hermes_chrome_list_tabs",
         "description": (
-            "List Chrome tabs. Default: Hermes workspace group only. "
-            "Use all_tabs=true for every tab (privacy-sensitive). "
-            "Filter with url_includes / title_includes (any site, e.g. github.com)."
+            "List workspace tabs as compact {id,title,url,active}. "
+            "all_tabs=true is privacy-sensitive. Filter with url_includes / title_includes."
         ),
         "inputSchema": {
             "type": "object",
@@ -373,25 +494,22 @@ TOOLS: list[dict[str, Any]] = [
                 "all_tabs": {"type": "boolean", "default": False},
                 "url_includes": {"type": "string"},
                 "title_includes": {"type": "string"},
-                "limit": {"type": "integer"},
+                "limit": {"type": "integer", "description": "Max tabs (default 40, max 80)"},
             },
         },
     },
     {
         "name": "hermes_chrome_list_tv",
         "description": (
-            "Optional helper: list TradingView-related tabs only. "
-            "For general use prefer hermes_chrome_list_tabs with url_includes."
+            "Optional: TradingView-related tabs. Prefer list_tabs + url_includes."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "hermes_chrome_capture",
         "description": (
-            "Capture a visible tab as PNG (any website). "
-            "prefer=auto (default workspace tab), active (focused tab, opt-in), "
-            "or optional legacy gc|nq finders. Prefer tab_id / open a URL first. "
-            "Saves under ~/.hermes/run/hermes-chrome/ unless out is set."
+            "Capture visible tab; returns file path + tab meta, never PNG bytes. "
+            "prefer=auto workspace, active=focused (opt-in). Prefer tab_id."
         ),
         "inputSchema": {
             "type": "object",
@@ -423,8 +541,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "hermes_chrome_open",
         "description": (
-            "Open any http(s) URL in the Hermes workspace (inactive tab by default). "
-            "Primary way to drive arbitrary sites."
+            "Open http(s) URL in the workspace (inactive tab). Returns tabId."
         ),
         "inputSchema": {
             "type": "object",
@@ -435,9 +552,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "hermes_chrome_stop",
         "description": (
-            "Close the Hermes agent workspace Tab Group when the task is done "
-            "(closes tabs by default). Does NOT stop the local bridge/companion — "
-            "only cleans up agent tabs. Use after open/capture workflows."
+            "Close the agent workspace Tab Group (not the bridge)."
         ),
         "inputSchema": {
             "type": "object",
@@ -455,7 +570,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "hermes_chrome_navigate",
-        "description": "Navigate a tab (or workspace default) to url.",
+        "description": "Navigate a tab (or workspace default) to url. Returns tabId.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -468,8 +583,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "hermes_chrome_eval",
         "description": (
-            "Evaluate JavaScript in a tab (ISOLATED world by default). "
-            "Requires tab_id from list_tabs. Workspace-only unless extension Options allow cross-workspace."
+            "Eval JS in a tab (MAIN world). tab_id from list_tabs. Value truncated."
         ),
         "inputSchema": {
             "type": "object",
@@ -510,7 +624,8 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def _tool_result(obj: Any, *, is_error: bool = False) -> dict[str, Any]:
-    text = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False, indent=2)
+    obj = cap_json(strip_secrets(obj)) if not isinstance(obj, str) else obj
+    text = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     return {
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
@@ -527,10 +642,8 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
                 h = wait_extension(timeout_s=wait_s)
             else:
                 h = health()
-            h = dict(h)
-            h["bridge_url"] = BRIDGE_URL
-            h["root"] = str(ROOT)
-            return _tool_result(h, is_error=not h.get("ok", True) and not h.get("service"))
+            compact = compact_health(h)
+            return _tool_result(compact, is_error=not compact.get("ok"))
 
         if name == "hermes_chrome_ping":
             return _tool_result(send_command("ping"))
@@ -548,10 +661,18 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
                 extra["titleIncludes"] = str(args["title_includes"])
             if args.get("limit") is not None:
                 extra["limit"] = int(args["limit"])
-            return _tool_result(send_command("list_tabs", extra))
+            else:
+                extra["limit"] = DEFAULT_TAB_LIMIT
+            data = send_command("list_tabs", extra)
+            if isinstance(data, dict) and data.get("tabs") is not None:
+                return _tool_result(compact_tabs(data, limit=extra["limit"]))
+            return _tool_result(data, is_error=not data.get("ok", True) if isinstance(data, dict) else False)
 
         if name == "hermes_chrome_list_tv":
-            return _tool_result(send_command("list_tv"))
+            data = send_command("list_tv")
+            if isinstance(data, dict) and data.get("tabs") is not None:
+                return _tool_result(compact_tabs(data))
+            return _tool_result(data)
 
         if name == "hermes_chrome_capture":
             prefer = str(args.get("prefer") or "auto")
@@ -570,7 +691,10 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             url = str(args.get("url") or "")
             if not url:
                 return _tool_result({"ok": False, "error": "url required"}, is_error=True)
-            return _tool_result(send_command("open", {"url": url}))
+            data = send_command("open", {"url": url})
+            if isinstance(data, dict) and not data.get("error"):
+                return _tool_result(compact_nav(data))
+            return _tool_result(data, is_error=True)
 
         if name == "hermes_chrome_stop":
             close_tabs = args.get("close_tabs")
@@ -587,18 +711,25 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             extra = {"url": url, "active": False}
             if args.get("tab_id") is not None:
                 extra["tabId"] = int(args["tab_id"])
-            return _tool_result(send_command("navigate", extra))
+            data = send_command("navigate", extra)
+            if isinstance(data, dict) and not data.get("error"):
+                return _tool_result(compact_nav(data))
+            return _tool_result(data, is_error=True)
 
         if name == "hermes_chrome_eval":
-            return _tool_result(
-                send_command(
-                    "eval",
-                    {
-                        "tabId": int(args["tab_id"]),
-                        "expression": str(args["expression"]),
-                    },
-                )
+            data = send_command(
+                "eval",
+                {
+                    "tabId": int(args["tab_id"]),
+                    "expression": str(args["expression"]),
+                },
             )
+            if isinstance(data, dict):
+                return _tool_result(
+                    compact_eval(data),
+                    is_error=data.get("ok") is False or bool(data.get("error")),
+                )
+            return _tool_result(data)
 
         if name == "hermes_chrome_click":
             return _tool_result(
@@ -688,13 +819,9 @@ def _handle(msg: dict[str, Any]) -> None:
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                     "instructions": (
-                        "Hermes Chrome drives the user's daily Chrome via a local bridge on "
-                        "127.0.0.1:19876. It is site-agnostic: open any http(s) URL with "
-                        "hermes_chrome_open, then list_tabs / capture / eval. "
-                        "Always call hermes_chrome_status first. "
-                        "If extension_connected is false: companion install + click extension icon + pair. "
-                        "Tabs outside the Hermes workspace need Options → allow cross-workspace, "
-                        "or capture prefer=active / list_tabs all_tabs=true."
+                        "Local Chrome only. Call status until ready=true, then open / "
+                        "list_tabs / capture / eval. Capture returns a file path, not PNG. "
+                        "Do not put tokens or native-host details in follow-up prompts."
                     ),
                 },
             }

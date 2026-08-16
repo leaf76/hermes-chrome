@@ -95,6 +95,42 @@ function nativeHostMissing(s) {
   return !!(err && /not found|specified native messaging host/i.test(err));
 }
 
+function parseSemver(text) {
+  const nums = String(text || "")
+    .match(/\d+/g)
+    ?.slice(0, 3)
+    .map((n) => Number(n));
+  if (!nums || !nums.length) return null;
+  while (nums.length < 3) nums.push(0);
+  return nums;
+}
+
+function cmpSemver(a, b) {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  }
+  return 0;
+}
+
+function companionVersion(s) {
+  const d = s.nativeHost && s.nativeHost.detail;
+  return (d && d.host_version) || null;
+}
+
+/** @returns {"companion"|"extension"|null} */
+function versionDrift(s) {
+  const ext = s.version || chrome.runtime.getManifest().version;
+  const host = companionVersion(s);
+  if (!ext || !host) return null;
+  const c = cmpSemver(host, ext);
+  if (c < 0) return "companion";
+  if (c > 0) return "extension";
+  return null;
+}
+
 function isHealthy(s) {
   return !!s.bridgeOk && (!s.bridgeAuth || (!!s.tokenSet && !!s.authReady));
 }
@@ -247,6 +283,42 @@ function updateUserFacing(s) {
     } else {
       setSecondary(null);
     }
+    const drift = versionDrift(s);
+    if (drift === "companion") {
+      setDot("warn");
+      if (els.summaryTitle) els.summaryTitle.textContent = "Update companion";
+      if (els.summaryDesc) {
+        els.summaryDesc.textContent =
+          "This extension is newer than the local companion. Re-run the GitHub installer (same command as first install).";
+      }
+      showInstallSteps({
+        tone: "warn",
+        heading: "Update the local companion",
+        leadHtml:
+          "Chrome Web Store can update the extension automatically. The companion on this machine " +
+          "needs the same one-liner again (git pull + re-register host).",
+        note: "Does not replace your token. Restart the agent MCP session after updating.",
+      });
+      setPrimary("Copy Update Command", "copyCmd");
+      setSecondary("Refresh", "refresh");
+    } else if (drift === "extension") {
+      setDot("warn");
+      if (els.summaryTitle) els.summaryTitle.textContent = "Reload extension";
+      if (els.summaryDesc) {
+        els.summaryDesc.textContent =
+          "Companion is newer than this extension. Update or reload Hermes Chrome from the Chrome Web Store.";
+      }
+      showInstallSteps({
+        tone: "warn",
+        heading: "Update the browser half",
+        leadHtml:
+          "Open the <a href=\"https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa\" target=\"_blank\" rel=\"noopener\">Chrome Web Store listing</a> " +
+          "or chrome://extensions → Hermes Chrome → Reload.",
+        note: "Unpacked installs: reload the extension from the repo extension/ folder.",
+      });
+      setPrimary("Refresh", "refresh");
+      setSecondary("Open GitHub", "github");
+    }
     return;
   }
 
@@ -372,7 +444,9 @@ function updateTech(s) {
     s.running ? s.title || "Hermes" : "none"
   );
   const ver = s.version || chrome.runtime.getManifest().version;
-  setBadge(els.versionBadge, true, ver || "?");
+  const hostVer = companionVersion(s);
+  const drift = versionDrift(s);
+  setBadge(els.versionBadge, drift ? false : true, hostVer ? `${ver} / ${hostVer}` : ver || "?");
   const last = formatLast(s.lastActivity);
   setBadge(els.lastBadge, s.lastActivity ? true : null, last.badge);
   if (els.lastLine) els.lastLine.textContent = last.line;

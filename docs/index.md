@@ -8,9 +8,11 @@ repo) + browser **extension** (Chrome Web Store or Load unpacked). Extension alo
 cannot open a control port.
 
 - **Repository:** [github.com/leaf76/hermes-chrome](https://github.com/leaf76/hermes-chrome)
+- **Chrome Web Store:** [Hermes Chrome](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa)
 - **User guide (EN):** [GUIDE.md](./GUIDE.md)
 - **使用教學（繁中）:** [GUIDE.zh-TW.md](./GUIDE.zh-TW.md)
 - **Privacy policy:** [privacy-policy.md](./privacy-policy.md)
+- **License:** [MIT](https://github.com/leaf76/hermes-chrome/blob/main/LICENSE)
 - **Chrome Web Store package:** see repo `store/` after `./store/package.sh`
 - **In-extension guide:** popup → **Guide** (`help.html`)
 - **Packaging / release:** [PACKAGING.md](./PACKAGING.md)

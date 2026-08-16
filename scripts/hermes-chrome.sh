@@ -810,6 +810,24 @@ cmd_doctor() {
   fi
 }
 
+cmd_self_update() {
+  local helper="${ROOT}/lib/self_update.py"
+  [[ -f "$helper" ]] || die "missing $helper"
+  local py
+  py="$(command -v python3 || command -v python || true)"
+  [[ -n "$py" ]] || die "python3 not found"
+  local sub="${1:-now}"
+  shift || true
+  case "$sub" in
+    enable|on) "$py" "$helper" enable ;;
+    disable|off) "$py" "$helper" disable ;;
+    status) "$py" "$helper" status ;;
+    now|run|"" ) "$py" "$helper" --force --restart ;;
+    maybe) "$py" "$helper" --maybe --restart ;;
+    *) die "usage: $0 self-update enable|disable|status|now" ;;
+  esac
+}
+
 cmd_install_native_host() {
   local helper="${SCRIPT_DIR}/install-native-host.sh"
   [[ -f "$helper" ]] || die "missing $helper"
@@ -901,7 +919,7 @@ cmd_uninstall_launchd() {
 usage() {
   sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
   echo
-  echo "commands: start|open|new-tab|navigate|list-tabs|eval|click|type|page-assets|check-tab-links|check-url|download|analyze|policy-show|token-setup|pair-open|show-token|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|bridge-restart|install|install-for-agent|install-mcp|install-native-host|install-launchd|uninstall-launchd|install-help|doctor"
+  echo "commands: start|open|new-tab|navigate|list-tabs|eval|click|type|page-assets|check-tab-links|check-url|download|analyze|policy-show|token-setup|pair-open|show-token|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|bridge-restart|install|install-for-agent|install-mcp|install-native-host|install-launchd|uninstall-launchd|install-help|doctor|self-update"
   echo "flags: --json|--json-only|-j  --quiet|-q"
 }
 
@@ -969,6 +987,8 @@ main() {
                     cmd_install_native_host "$@" ;;
     install-help)   cmd_install_help ;;
     doctor)         cmd_doctor "$@" ;;
+    self-update|self_update|auto-update)
+                    cmd_self_update "$@" ;;
     -h|--help|help|"") usage; [[ -n "$cmd" ]] || exit 1 ;;
     *) die "unknown command: $cmd" ;;
   esac

@@ -1,6 +1,14 @@
 # hermes-chrome
 
-**Repo:** https://github.com/leaf76/hermes-chrome  
+**Current:** companion + extension **v1.8.3** · **License:** [MIT](LICENSE)
+
+| | |
+|--|--|
+| **Repo** | https://github.com/leaf76/hermes-chrome |
+| **Chrome Web Store** | https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa |
+| **Docs site** | https://leaf76.github.io/hermes-chrome/ |
+| **Privacy policy** | https://leaf76.github.io/hermes-chrome/privacy-policy |
+| **Releases** | https://github.com/leaf76/hermes-chrome/releases |
 
 Local agent companion that makes **Chrome easy for any local AI agent to operate**—open
 **any website**, capture, list tabs, light DOM—without hijacking the tab you are using.
@@ -18,7 +26,7 @@ let an extension open a control port. Hermes Chrome is always:
 | Half | What | Where |
 |------|------|--------|
 | **Companion** (machine half) | Local bridge on `127.0.0.1:19876` + Native Messaging host + token | **GitHub + `install.sh`** → `~/.hermes/hermes-chrome` |
-| **Extension** (browser half) | Tab workspace, capture, DOM ops; talks to the bridge | Chrome Web Store or Load unpacked → `extension/` |
+| **Extension** (browser half) | Tab workspace, capture, DOM ops; talks to the bridge | [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) or Load unpacked → `extension/` |
 
 **Not on PyPI.** Runtime companion is **not** a Node reimplementation. Optional
 **MCP** ships as `mcp_server.py` in the companion install; installers register
@@ -39,7 +47,7 @@ Please set up the Hermes Chrome companion on my machine for Chrome automation:
 3. Ensure `~/.local/bin` is in my PATH (add `export PATH="$HOME/.local/bin:$PATH"` to my shell profile if missing).
 4. Run `hermes-chrome doctor` to verify companion and bridge health.
 5. If I use Cursor, Claude Desktop, or Grok, check that MCP is registered (~/.hermes/run/hermes-chrome/mcp-snippet.json).
-6. Remind me to install the Hermes Chrome extension from Chrome Web Store and click the extension icon once to connect.
+6. Remind me to install the Hermes Chrome extension from https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa and click the extension icon once to connect.
 ```
 
 ### Manual Quick Start
@@ -56,7 +64,8 @@ npx hermes-chrome-companion
 
 # → ~/.hermes/hermes-chrome + ~/.local/bin/hermes-chrome
 
-# 2) Install / reload extension (v1.8+) → click icon once → Pair if needed
+# 2) Chrome Web Store (v1.8.3) or Load unpacked → click icon once → Pair if needed
+#    https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa
 
 # 3) Smoke
 hermes-chrome --json bridge-status   # extension_connected:true
@@ -70,10 +79,27 @@ zip, optional `.pkg`. Details: [docs/PACKAGING.md](docs/PACKAGING.md).
 Full walkthrough: [docs/GUIDE.md](docs/GUIDE.md) · [繁中 docs/GUIDE.zh-TW.md](docs/GUIDE.zh-TW.md) ·
 extension popup → **Guide** (offline help).
 
-**Privacy policy (Chrome Web Store):**  
-https://leaf76.github.io/hermes-chrome/privacy-policy  
-
+**Privacy policy (Chrome Web Store):** https://leaf76.github.io/hermes-chrome/privacy-policy  
 (also in-repo: `docs/privacy-policy.md` / `store/privacy-policy.md`)
+
+## Updating (companion vs extension)
+
+**Extension:** Chrome Web Store already auto-updates.
+
+**Companion:** after a normal (non `--dev`) install, the local git checkout
+auto-updates **once a day** from `github.com/leaf76/hermes-chrome` (fast-forward
+only, dirty trees skipped). Token / `bridge.env` is left alone. Native host is
+re-registered; the bridge restarts.
+
+```bash
+hermes-chrome self-update status
+hermes-chrome self-update now          # pull immediately
+hermes-chrome self-update disable      # opt out
+# or: HERMES_CHROME_AUTO_UPDATE=0
+```
+
+`--dev` clones are not enrolled (won't overwrite your worktree). Popup still
+warns if the two halves drift (CWS vs companion). Restart MCP after a companion bump.
 
 ## What it is for
 
@@ -128,12 +154,13 @@ https://leaf76.github.io/hermes-chrome/privacy-policy
 
 Runtime pid/log: `~/.hermes/run/hermes-chrome/` (not in git).
 
-## Quick start (companion first, then extension)
+## From a git clone (maintainers / `--dev`)
 
-Order matters: **companion → extension → pair → smoke**. Chrome Web Store alone
-cannot run a local control plane. After companion install, the extension can
-auto-start the bridge via **Native Messaging**. Works for **any** agent (CLI,
-Grok, Cursor, Claude Desktop…).
+Use [Manual Quick Start](#manual-quick-start) for the product install. From a
+clone: **companion → extension → pair → smoke**. Chrome Web Store alone cannot
+run a local control plane. After companion install, the extension can auto-start
+the bridge via **Native Messaging**. Works for **any** agent (CLI, Grok, Cursor,
+Claude Desktop…).
 
 ```bash
 # macOS / Linux — companion (once per machine)
@@ -154,7 +181,7 @@ What the companion install does:
 
 Then the browser half:
 
-1. Install/enable **Hermes Chrome v1.7+** (CWS or Load unpacked → `./extension`)
+1. Install/enable **Hermes Chrome v1.8.3** ([Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) or Load unpacked → `./extension`)
 2. Accept **nativeMessaging** if prompted → **Reload** → click icon once
 3. Wait for auto-pair (or popup → **Pair**). If Bridge is offline, popup shows
    **Setup required** with the companion command — not a broken install alone.
@@ -173,11 +200,11 @@ Then the browser half:
 ```bash
 ./scripts/hermes-chrome.sh install-launchd   # macOS recommended (creates token + KeepAlive)
 # or: ./scripts/hermes-chrome.sh bridge-start
-# Chrome → Load unpacked → ./extension  (or CWS install) — need v1.5.0+
-# Extension v1.5.1+ auto-pairs when bridge pairing is open (reload is enough).
+# Chrome Web Store (v1.8.3) or Load unpacked → ./extension
+# Auto-pairs when bridge pairing is open (reload / click icon is enough).
 # Manual fallback: ./scripts/hermes-chrome.sh pair-open  then popup → Pair
 ./scripts/hermes-chrome.sh bridge-status     # auth:true, extension_connected:true
-./scripts/hermes-chrome.sh ping              # waits/retries until extension is up; want 1.5.1+
+./scripts/hermes-chrome.sh ping              # waits/retries until extension is up
 ./scripts/hermes-chrome.sh --json ping       # agent-friendly JSON only
 ./scripts/hermes-chrome.sh start 'https://example.com/'
 ./scripts/hermes-chrome.sh list-tabs         # workspace only; --all for every tab
@@ -211,7 +238,8 @@ HERMES_CHROME_ROOT = "/path/to/hermes-chrome"
 grok mcp add hermes-chrome -- /path/to/python3 /path/to/hermes-chrome/mcp_server.py
 ```
 
-MCP tools: `hermes_chrome_status`, `hermes_chrome_ping`, `hermes_chrome_list_tabs`,
+MCP tools: compact JSON (`id`/`title`/`url`; capture = file path, never PNG bytes).
+`hermes_chrome_status`, `hermes_chrome_ping`, `hermes_chrome_list_tabs`,
 `hermes_chrome_list_tv`, `hermes_chrome_capture`, `hermes_chrome_open`,
 `hermes_chrome_stop` (close agent Tab Group when done — not the bridge),
 `hermes_chrome_navigate`, `hermes_chrome_eval`, `hermes_chrome_click`,
@@ -235,7 +263,7 @@ Full write-up: [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 | `/v1/health` | Public = liveness; full detail needs token |
 | `list-tabs` | Workspace group only (`--all` for everything) |
 | `eval` / `click` / `type` / `capture` | Workspace tabs only (Options override) |
-| `eval` world | ISOLATED by default (`world: "MAIN"` opt-in) |
+| `eval` world | **MAIN** by default (`world: "ISOLATED"` opt-in; MV3 isolated CSP blocks `eval`/`Function`) |
 | Private/IP hosts | Blocked for check-url / download / cookie fetch |
 | Queue / body limits | Enforced on bridge |
 
@@ -288,6 +316,9 @@ Always gate with `hermes_chrome_status` / `ping` (or `bridge-status` + `extensio
 **Same machine required:** Chrome, bridge, and the agent must share `localhost`. A Grok session on Windows cannot drive Chrome on a Mac.
 
 ## Chrome Web Store
+
+Listing: https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa  
+Extension id: `mkoaoadlkijccmmbkioagnlngbbeocfa`
 
 ```bash
 ./store/package.sh

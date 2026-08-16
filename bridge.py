@@ -31,12 +31,21 @@ import os
 import queue
 import re
 import secrets
+import subprocess
+import sys
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT / "lib") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "lib"))
+from version_util import product_version  # noqa: E402
+
+COMPANION_VERSION = product_version(_ROOT)
 
 HOST = os.environ.get("HERMES_CHROME_BRIDGE_HOST") or os.environ.get(
     "HERMES_TABGROUP_BRIDGE_HOST", "127.0.0.1"
@@ -280,6 +289,7 @@ def _health_payload(*, detail: bool = False) -> dict:
             "pairing_open": pairing,
             "extension_last_seen_s": age,
             "extension_version": ver,
+            "companion_version": COMPANION_VERSION,
             "extension": name,
             "connected_max_age_s": _CONNECTED_MAX_AGE_S,
             "allowed_extension_ids": sorted(_allowed_extension_ids()),
@@ -633,7 +643,30 @@ class Handler(BaseHTTPRequestHandler):
         _json_response(self, 404, {"ok": False, "error": "not found"})
 
 
-def main() -> None:
+def _spawn_self_update_loop() -> None:
+    """Daily companion git update (no-op unless auto-update is enabled)."""
+    script = _ROOT / "lib" / "self_update.py"
+    if not script.is_file():
+        return
+
+    def loop() -> None:
+        time.sleep(600)
+        while True:
+            try:
+                subprocess.run(
+                    [sys.executable, str(script), "--maybe", "--restart"],
+                    cwd=str(_ROOT),
+                    timeout=180,
+                    capture_output=True,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            time.sleep(86400)
+
+    threading.Thread(
+        target=loop, name="hermes-chrome-self-update", daemon=True
+    ).start()
     # Refuse non-loopback binds unless explicitly forced (safety).
     if HOST not in ("127.0.0.1", "localhost", "::1") and os.environ.get(
         "HERMES_CHROME_BRIDGE_ALLOW_NONLOCAL"
@@ -664,6 +697,7 @@ def main() -> None:
             "(extension: Options → Pair with bridge, or paste token)",
             flush=True,
         )
+    _spawn_self_update_loop()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
