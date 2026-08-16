@@ -1,6 +1,6 @@
 {
   "name": "hermes-chrome-companion",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "description": "Thin installer for Hermes Chrome local companion (bridge + native host). Not the Chrome extension runtime — clones/downloads from GitHub and runs install.sh.",
   "license": "MIT",
   "author": "leaf76",

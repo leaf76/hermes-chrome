@@ -1,6 +1,6 @@
 # hermes-chrome
 
-**Current:** companion + extension **v1.8.3** · **License:** [MIT](LICENSE)
+**Current:** companion + extension **v1.8.4** · **License:** [MIT](LICENSE)
 
 | | |
 |--|--|
@@ -64,7 +64,7 @@ npx hermes-chrome-companion
 
 # → ~/.hermes/hermes-chrome + ~/.local/bin/hermes-chrome
 
-# 2) Chrome Web Store (v1.8.3) or Load unpacked → click icon once → Pair if needed
+# 2) Chrome Web Store (v1.8.4) or Load unpacked → click icon once → Pair if needed
 #    https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa
 
 # 3) Smoke
@@ -181,7 +181,7 @@ What the companion install does:
 
 Then the browser half:
 
-1. Install/enable **Hermes Chrome v1.8.3** ([Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) or Load unpacked → `./extension`)
+1. Install/enable **Hermes Chrome v1.8.4** ([Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) or Load unpacked → `./extension`)
 2. Accept **nativeMessaging** if prompted → **Reload** → click icon once
 3. Wait for auto-pair (or popup → **Pair**). If Bridge is offline, popup shows
    **Setup required** with the companion command — not a broken install alone.
@@ -200,7 +200,7 @@ Then the browser half:
 ```bash
 ./scripts/hermes-chrome.sh install-launchd   # macOS recommended (creates token + KeepAlive)
 # or: ./scripts/hermes-chrome.sh bridge-start
-# Chrome Web Store (v1.8.3) or Load unpacked → ./extension
+# Chrome Web Store (v1.8.4) or Load unpacked → ./extension
 # Auto-pairs when bridge pairing is open (reload / click icon is enough).
 # Manual fallback: ./scripts/hermes-chrome.sh pair-open  then popup → Pair
 ./scripts/hermes-chrome.sh bridge-status     # auth:true, extension_connected:true

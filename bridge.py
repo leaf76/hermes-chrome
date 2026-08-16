@@ -667,6 +667,9 @@ def _spawn_self_update_loop() -> None:
     threading.Thread(
         target=loop, name="hermes-chrome-self-update", daemon=True
     ).start()
+
+
+def main() -> None:
     # Refuse non-loopback binds unless explicitly forced (safety).
     if HOST not in ("127.0.0.1", "localhost", "::1") and os.environ.get(
         "HERMES_CHROME_BRIDGE_ALLOW_NONLOCAL"
