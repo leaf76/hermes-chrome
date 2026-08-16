@@ -37,6 +37,7 @@ popup **Setup needed** when companion/bridge is missing.
 ## Validate
 
 ```bash
+# Offline CI (no Chrome): ./scripts/ci-check.sh  — GitHub: .github/workflows/ci.yml
 # Preferred product path (fixed root)
 ./scripts/install.sh --dev          # or: curl …/install.sh | bash
 ./scripts/hermes-chrome.sh doctor

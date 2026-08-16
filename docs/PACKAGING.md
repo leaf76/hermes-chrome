@@ -32,6 +32,8 @@ git tag v1.8.0
 git push origin v1.8.0
 ```
 
+CI (tests + CodeQL, no Chrome): `.github/workflows/ci.yml` · local: `./scripts/ci-check.sh`
+
 Workflow: `.github/workflows/release.yml`
 
 - Builds `dist/release/*` via `scripts/packaging/build-release-assets.sh`
