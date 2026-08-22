@@ -105,7 +105,7 @@ MCP 片段：`~/.hermes/run/hermes-chrome/mcp-snippet.json`
 
 ### 2. 安裝 / 啟用 extension
 
-- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **或** Load unpacked → `extension/`（v1.8.5）
+- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **或** Load unpacked → `extension/`（v1.8.7）
 - 需要時允許 **nativeMessaging**
 - **重新載入** extension → **點一下 icon**
 - 等 auto-pair，或按 popup 的 **Pair**

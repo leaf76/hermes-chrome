@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -44,7 +45,32 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(got["ok"], True)
         self.assertEqual(got["ready"], True)
         self.assertEqual(got["update"], "companion")
+        self.assertIn("self-update", got["fix"])
         self.assertNotIn("root", got)
+
+    def test_compact_health_extension_behind_fix(self) -> None:
+        got = m.compact_health(
+            {
+                "ok": True,
+                "extension_connected": True,
+                "companion_version": "1.8.4",
+                "extension_version": "1.8.3",
+            }
+        )
+        self.assertEqual(got["update"], "extension")
+        self.assertIn("Web Store", got["fix"])
+
+    def test_compact_health_aligned_has_no_update(self) -> None:
+        got = m.compact_health(
+            {
+                "ok": True,
+                "extension_connected": True,
+                "companion_version": "1.8.6",
+                "extension_version": "1.8.6",
+            }
+        )
+        self.assertNotIn("update", got)
+        self.assertNotIn("fix", got)
 
     def test_compact_health_not_ready_has_hint(self) -> None:
         got = m.compact_health({"extension_connected": False, "auth": True})
@@ -81,6 +107,52 @@ class CompactTests(unittest.TestCase):
         self.assertTrue(got["ok"])
         self.assertEqual(len(got["value"]), m.EVAL_VALUE_MAX + 1)
         self.assertTrue(got["value"].endswith("…"))
+
+    def test_compact_read_page_truncates_and_metas(self) -> None:
+        got = m.compact_read_page(
+            {
+                "ok": True,
+                "tabId": 7,
+                "title": "T" * 300,
+                "url": "u" * 500,
+                "text": "x" * 9000,
+                "textLength": 20000,
+                "status": "complete",
+                "timedOut": False,
+            }
+        )
+        self.assertTrue(got["ok"])
+        self.assertEqual(len(got["title"]), m.TAB_TITLE_MAX)
+        self.assertEqual(len(got["url"]), m.TAB_URL_MAX)
+        self.assertEqual(len(got["text"]), m.EVAL_VALUE_MAX + 1)
+        self.assertEqual(got["text_chars"], 20000)
+        self.assertEqual(got["status"], "complete")
+        self.assertNotIn("timedOut", got)
+
+    def test_compact_read_page_timeout_flag(self) -> None:
+        got = m.compact_read_page(
+            {"ok": True, "tabId": 1, "status": "loading", "timedOut": True}
+        )
+        self.assertTrue(got["timedOut"])
+        self.assertEqual(got["text"], "")
+
+    def test_env_wait_ext_s_override(self) -> None:
+        saved = os.environ.pop("HERMES_CHROME_WAIT_EXT_S", None)
+        try:
+            self.assertEqual(m.env_wait_ext_s(), m.DEFAULT_WAIT_EXT_S)
+            os.environ["HERMES_CHROME_WAIT_EXT_S"] = "5"
+            self.assertEqual(m.env_wait_ext_s(), 5.0)
+            os.environ["HERMES_CHROME_WAIT_EXT_S"] = "-1"
+            self.assertEqual(m.env_wait_ext_s(), m.DEFAULT_WAIT_EXT_S)
+            os.environ["HERMES_CHROME_WAIT_EXT_S"] = "bogus"
+            self.assertEqual(m.env_wait_ext_s(), m.DEFAULT_WAIT_EXT_S)
+            os.environ["HERMES_CHROME_WAIT_EXT_S"] = "0"
+            self.assertEqual(m.env_wait_ext_s(), 0.0)
+        finally:
+            if saved is None:
+                os.environ.pop("HERMES_CHROME_WAIT_EXT_S", None)
+            else:
+                os.environ["HERMES_CHROME_WAIT_EXT_S"] = saved
 
     def test_cap_json_and_tool_result_minified(self) -> None:
         huge = {"ok": True, "blob": "n" * (m.AGENT_JSON_MAX + 100)}

@@ -8,6 +8,7 @@
 #   bash scripts/install.sh
 #   bash scripts/install.sh --dev          # use this clone in-place (no copy)
 #   bash scripts/install.sh --skip-mcp
+#   bash scripts/install.sh --no-open      # do not auto-open the CWS page
 #   bash scripts/install.sh --uninstall
 #
 # Installs to:
@@ -29,13 +30,14 @@ CWS_URL="https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmb
 SKIP_MCP=0
 UNINSTALL=0
 DEV_MODE=0
+NO_OPEN=0
 FROM_SOURCE=""
 
 die() { echo "error: $*" >&2; exit 1; }
 log() { echo "[hermes-chrome] $*"; }
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --skip-mcp|--skip-grok) SKIP_MCP=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --dev) DEV_MODE=1; shift ;;
+    --no-open) NO_OPEN=1; shift ;;
     --root)
       INSTALL_ROOT="${2:-}"; shift 2 || die "--root needs path"
       ;;
@@ -236,6 +239,23 @@ if [[ "$DEV_MODE" != "1" ]]; then
   log "enabling companion auto-update (git ff-only from GitHub; disable: hermes-chrome self-update disable)"
   "$PYTHON3" "${INSTALL_ROOT}/lib/self_update.py" enable || true
 fi
+
+maybe_open_cws() {
+  [[ "$NO_OPEN" == "1" ]] && return 0
+  [[ -n "${CI:-}" ]] && return 0
+  local opener=""
+  case "$uname_s" in
+    Darwin) opener="open" ;;
+    Linux)
+      if command -v xdg-open >/dev/null 2>&1; then opener="xdg-open"; fi
+      ;;
+  esac
+  if [[ -n "$opener" ]]; then
+    log "opening Chrome Web Store page… (--no-open to skip)"
+    "$opener" "$CWS_URL" >/dev/null 2>&1 || true
+  fi
+}
+maybe_open_cws
 
 cat <<EOF
 

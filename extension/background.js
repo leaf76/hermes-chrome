@@ -1248,6 +1248,99 @@ async function typeInTab(cmd) {
   return { tabId, selector, typed: text.length, ...result };
 }
 
+/**
+ * Wait for a tab to reach status=complete (or timeout). Never focuses the tab.
+ * Resolves {status,title,timedOut}.
+ */
+function waitForTabComplete(tabId, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const onUpdated = (updatedId, changeInfo) => {
+      if (updatedId !== tabId || changeInfo.status !== "complete") return;
+      // Small settle so load handlers / late DOM work finish before extraction.
+      setTimeout(finish, 250);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+      } catch {
+        /* ignore */
+      }
+      chrome.tabs
+        .get(tabId)
+        .then((tab) =>
+          resolve({ status: tab.status || "unknown", title: tab.title || "", timedOut: true })
+        )
+        .catch(() => resolve({ status: "gone", title: "", timedOut: true }));
+    }, Math.max(1000, timeoutMs));
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+      } catch {
+        /* ignore */
+      }
+      chrome.tabs
+        .get(tabId)
+        .then((tab) =>
+          resolve({ status: tab.status || "unknown", title: tab.title || "", timedOut: false })
+        )
+        .catch(() => resolve({ status: "gone", title: "", timedOut: false }));
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+  });
+}
+
+/**
+ * Composite read: navigate (inactive) → wait for load → extract
+ * {title,url,text excerpt}. One bridge command instead of open+eval loops.
+ */
+async function readPage(cmd) {
+  let tabId;
+  if (cmd.tabId != null && Number.isFinite(Number(cmd.tabId))) {
+    tabId = Number(cmd.tabId);
+    await assertTabInWorkspace(tabId, cmd);
+    if (cmd.url) {
+      await chrome.tabs.update(tabId, { url: assertHttpUrl(cmd.url), active: false });
+    }
+  } else {
+    if (!cmd.url) throw new Error("url or tabId required");
+    const nav = await navigateTab({ url: cmd.url, active: false });
+    tabId = nav.tabId;
+  }
+  const waitMs = Math.min(60000, Math.max(1000, Number(cmd.waitMs) || 15000));
+  const waited = await waitForTabComplete(tabId, waitMs);
+  const textMax = Math.min(20000, Math.max(200, Number(cmd.textMax) || 4000));
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [textMax],
+    func: (cap) => {
+      const main =
+        document.querySelector("main") ||
+        document.querySelector("article") ||
+        document.querySelector('[role="main"]') ||
+        document.body;
+      const raw = String((main && (main.innerText || main.textContent)) || "");
+      const text = raw.replace(/\s+/g, " ").trim().slice(0, cap);
+      return {
+        ok: true,
+        title: document.title || "",
+        url: location.href,
+        text,
+        textLength: raw.length,
+      };
+    },
+  });
+  const result = (res && res.result) || { ok: false, error: "no_result" };
+  if (!result.ok) throw new Error(result.error || "read failed");
+  return { ok: true, tabId, ...waited, ...result };
+}
+
 async function handleCommand(cmd) {
   switch (cmd.action) {
     case "ping":
@@ -1267,6 +1360,9 @@ async function handleCommand(cmd) {
       return await openInGroup(cmd.url, { newTab: true });
     case "navigate":
       return await navigateTab(cmd);
+    case "read_page":
+    case "read-page":
+      return await readPage(cmd);
     case "list_tabs":
     case "list-tabs":
       return await listTabs(cmd);

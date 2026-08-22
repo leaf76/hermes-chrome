@@ -1,6 +1,6 @@
 # hermes-chrome
 
-**Current:** companion + extension **v1.8.6** · **License:** [MIT](LICENSE)
+**Current:** companion + extension **v1.8.7** · **License:** [MIT](LICENSE)
 
 | | |
 |--|--|
@@ -64,7 +64,7 @@ npx hermes-chrome-companion
 
 # → ~/.hermes/hermes-chrome + ~/.local/bin/hermes-chrome
 
-# 2) Chrome Web Store (v1.8.5) or Load unpacked → click icon once → Pair if needed
+# 2) Chrome Web Store (v1.8.7) or Load unpacked → click icon once → Pair if needed
 #    https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa
 
 # 3) Smoke
@@ -200,7 +200,7 @@ Then the browser half:
 ```bash
 ./scripts/hermes-chrome.sh install-launchd   # macOS recommended (creates token + KeepAlive)
 # or: ./scripts/hermes-chrome.sh bridge-start
-# Chrome Web Store (v1.8.5) or Load unpacked → ./extension
+# Chrome Web Store (v1.8.7) or Load unpacked → ./extension
 # Auto-pairs when bridge pairing is open (reload / click icon is enough).
 # Manual fallback: ./scripts/hermes-chrome.sh pair-open  then popup → Pair
 ./scripts/hermes-chrome.sh bridge-status     # auth:true, extension_connected:true

@@ -42,6 +42,7 @@ if str(ROOT / "lib") not in sys.path:
     sys.path.insert(0, str(ROOT / "lib"))
 from bridge_runtime import (  # noqa: E402
     BRIDGE_PY,
+    BRIDGE_URL,
     RUN_DIR,
     ensure_bridge as _rt_ensure_bridge,
     health,
@@ -53,6 +54,11 @@ from version_util import mismatch, product_version  # noqa: E402
 SERVER_NAME = "hermes-chrome"
 SERVER_VERSION = product_version(ROOT)
 PROTOCOL_VERSION = "2024-11-05"
+
+# Fast-fail budget for "extension not connected" before a command send. First-time
+# pairing can take longer; hermes_chrome_status accepts an explicit wait instead.
+# Override with HERMES_CHROME_WAIT_EXT_S (seconds, >= 0).
+DEFAULT_WAIT_EXT_S = 12.0
 
 # Agent-facing payloads: keep context small; never echo secrets or PNG bytes.
 AGENT_JSON_MAX = 12_000
@@ -112,6 +118,11 @@ def compact_health(h: dict[str, Any]) -> dict[str, Any]:
         drift = mismatch(h.get("companion_version"), h.get("extension_version"))
         if drift:
             out["update"] = drift
+            out["fix"] = (
+                "companion behind — run: hermes-chrome self-update now"
+                if drift == "companion"
+                else "extension behind — update via Chrome Web Store or reload unpacked"
+            )
         return strip_secrets(out)
     out = {
         "ok": False,
@@ -173,6 +184,41 @@ def compact_eval(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def compact_read_page(data: dict[str, Any]) -> dict[str, Any]:
+    """Compact read_page result: title/url/text excerpt + load meta."""
+    out: dict[str, Any] = {"ok": data.get("ok", True) is not False}
+    if data.get("tabId") is not None:
+        out["tabId"] = data.get("tabId")
+    out["title"] = _ellipsis(str(data.get("title") or ""), TAB_TITLE_MAX)
+    out["url"] = _ellipsis(str(data.get("url") or ""), TAB_URL_MAX)
+    text = str(data.get("text") or "")
+    if len(text) > EVAL_VALUE_MAX:
+        text = text[:EVAL_VALUE_MAX] + "…"
+    out["text"] = text
+    out["text_chars"] = int(data.get("textLength") or len(text))
+    if data.get("status"):
+        out["status"] = data.get("status")
+    if data.get("timedOut"):
+        out["timedOut"] = True
+    if data.get("error"):
+        out["ok"] = False
+        out["error"] = data.get("error")
+    return out
+
+
+def env_wait_ext_s() -> float:
+    """Fast-fail budget for send_command (HERMES_CHROME_WAIT_EXT_S)."""
+    raw = str(os.environ.get("HERMES_CHROME_WAIT_EXT_S") or "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if val >= 0:
+                return val
+        except ValueError:
+            pass
+    return DEFAULT_WAIT_EXT_S
+
+
 def cap_json(obj: Any, budget: int = AGENT_JSON_MAX) -> Any:
     obj = strip_secrets(obj)
     raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
@@ -202,7 +248,7 @@ def wait_extension(timeout_s: float = 25.0) -> dict[str, Any]:
 
 def send_command(action: str, extra: dict[str, Any] | None = None, *, wait_s: float = 30.0) -> dict[str, Any]:
     """Enqueue command and wait for extension result."""
-    h = wait_extension(timeout_s=min(25.0, wait_s))
+    h = wait_extension(timeout_s=min(env_wait_ext_s(), wait_s))
     if not h.get("extension_connected"):
         return h
 
@@ -294,7 +340,7 @@ def capture_png(
     if title_includes:
         extra["titleIncludes"] = title_includes
 
-    h = wait_extension()
+    h = wait_extension(timeout_s=env_wait_ext_s())
     if not h.get("extension_connected"):
         return h
 
@@ -356,11 +402,30 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "hermes_chrome_list_tv",
+        "name": "hermes_chrome_read_page",
         "description": (
-            "Optional: TradingView-related tabs. Prefer list_tabs + url_includes."
+            "Open/navigate a URL in the workspace (inactive tab), wait for load, "
+            "then extract {title,url,text excerpt} — one call instead of open+eval. "
+            "With tab_id only (no url), reads the current page of that tab."
         ),
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Target URL (omit when using tab_id to read the current page)",
+                },
+                "tab_id": {"type": "integer"},
+                "wait_ms": {
+                    "type": "integer",
+                    "description": "Load wait cap ms (default 15000, max 60000)",
+                },
+                "text_max": {
+                    "type": "integer",
+                    "description": "Text excerpt cap chars (default 4000, max 20000)",
+                },
+            },
+        },
     },
     {
         "name": "hermes_chrome_capture",
@@ -525,11 +590,28 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
                 return _tool_result(compact_tabs(data, limit=extra["limit"]))
             return _tool_result(data, is_error=not data.get("ok", True) if isinstance(data, dict) else False)
 
-        if name == "hermes_chrome_list_tv":
-            data = send_command("list_tv")
-            if isinstance(data, dict) and data.get("tabs") is not None:
-                return _tool_result(compact_tabs(data))
-            return _tool_result(data)
+        if name == "hermes_chrome_read_page":
+            extra: dict[str, Any] = {}
+            url = args.get("url")
+            tab_id = args.get("tab_id")
+            if url:
+                extra["url"] = str(url)
+            if tab_id is not None:
+                extra["tabId"] = int(tab_id)
+            if not extra.get("url") and extra.get("tabId") is None:
+                return _tool_result(
+                    {"ok": False, "error": "url or tab_id required"}, is_error=True
+                )
+            extra["waitMs"] = max(1000, min(int(args.get("wait_ms") or 15000), 60000))
+            if args.get("text_max") is not None:
+                extra["textMax"] = max(200, min(int(args["text_max"]), 20000))
+            # Budget must cover the page-load wait plus extraction overhead.
+            data = send_command(
+                "read_page", extra, wait_s=extra["waitMs"] / 1000 + 25.0
+            )
+            if isinstance(data, dict) and (data.get("ok") is False or data.get("error")):
+                return _tool_result(data, is_error=True)
+            return _tool_result(compact_read_page(data))
 
         if name == "hermes_chrome_capture":
             prefer = str(args.get("prefer") or "auto")
@@ -677,8 +759,10 @@ def _handle(msg: dict[str, Any]) -> None:
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                     "instructions": (
                         "Local Chrome only. Call status until ready=true, then open / "
-                        "list_tabs / capture / eval. Capture returns a file path, not PNG. "
-                        "Do not put tokens or native-host details in follow-up prompts."
+                        "list_tabs / read_page / capture / eval. read_page navigates, waits "
+                        "for load, and extracts text in one call. Capture returns a file "
+                        "path, not PNG. Do not put tokens or native-host details in "
+                        "follow-up prompts."
                     ),
                 },
             }

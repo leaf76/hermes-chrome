@@ -121,14 +121,36 @@ def http_json(
         return 0, {"ok": False, "error": f"bridge unreachable: {e.reason}"}
 
 
-def health() -> dict[str, Any]:
+# Hot path (MCP tool call → ensure_bridge + wait_extension) used to pay two
+# /v1/health round trips per command. Cache only *connected* payloads for a
+# short TTL; negative results are never cached so reconnect detection keeps
+# its ~0.5s polling cadence.
+HEALTH_TTL_S = 2.0
+_health_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def health(*, max_age_s: float = HEALTH_TTL_S) -> dict[str, Any]:
+    """GET /v1/health; caches only extension-connected results for max_age_s."""
+    global _health_cache
+    if max_age_s > 0 and _health_cache is not None:
+        at, cached = _health_cache
+        if time.time() - at <= max_age_s:
+            return cached
     code, payload = http_json("GET", "/v1/health", timeout=2.0)
+    _health_cache = None
     if code == 200 and isinstance(payload, dict):
+        if payload.get("extension_connected"):
+            _health_cache = (time.time(), payload)
         return payload
     err = None
     if isinstance(payload, dict):
         err = payload.get("error")
     return {"ok": False, "bridge": "down", "error": err or "down"}
+
+
+def health_fresh() -> dict[str, Any]:
+    """Force a network /v1/health round trip (bypass the TTL cache)."""
+    return health(max_age_s=0)
 
 
 def bridge_up(h: dict[str, Any] | None = None) -> bool:
@@ -251,6 +273,7 @@ def wait_extension(
     last["ok"] = False
     last["error"] = (
         "extension not connected. Install/enable Hermes Chrome, click the icon "
-        "once, and wait for auto-pair (or popup → Pair)."
+        "once, and wait for auto-pair (or popup → Pair). "
+        "Repair: hermes-chrome doctor --fix"
     )
     return last
