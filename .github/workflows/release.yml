@@ -28,7 +28,31 @@ permissions:
   contents: write
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile and unit tests
+        run: chmod +x scripts/ci-check.sh && ./scripts/ci-check.sh
+
+      - name: Package extension zip
+        run: |
+          chmod +x store/package.sh
+          bash store/package.sh
+
   release:
+    needs: checks
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -60,7 +84,12 @@ jobs:
           echo "manifest=$MANIFEST_VER" >>"$GITHUB_OUTPUT"
           echo "Resolved tag=$TAG version=$VER manifest=$MANIFEST_VER"
           if [[ -n "${{ github.event_name }}" && "${{ github.event_name }}" == "push" && "$VER" != "$MANIFEST_VER" ]]; then
-            echo "::warning::Tag version ($VER) != manifest.json ($MANIFEST_VER). Using tag version for asset names; prefer keeping them equal."
+            echo "::error::Tag version ($VER) != manifest.json ($MANIFEST_VER). Bump manifest or retag."
+            exit 1
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" && "$VER" != "$MANIFEST_VER" ]]; then
+            echo "::error::Requested tag ($VER) != manifest.json ($MANIFEST_VER)."
+            exit 1
           fi
 
       - name: Build release assets

@@ -19,7 +19,7 @@
 
 **Ready** = popup shows Bridge **online** + Auth **ready**, and `hermes-chrome.sh --json ping` succeeds.
 
-If the popup shows **Setup required**, the companion is missing or the bridge is down — follow the command in the popup (or section 1 below). That is expected when only the store package is installed.
+If the popup shows **Setup needed**, the companion is missing or the bridge is down — follow the command in the popup (or section 1 below). That is expected when only the store package is installed.
 
 ### Updates
 
@@ -57,7 +57,7 @@ Please set up the Hermes Chrome companion on my machine for Chrome automation:
    - macOS / Linux: run `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
    - Windows: clone https://github.com/leaf76/hermes-chrome.git and run `powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1`
 3. Ensure `~/.local/bin` is in my PATH (add `export PATH="$HOME/.local/bin:$PATH"` to my shell profile if missing).
-4. Run `hermes-chrome doctor` to verify companion and bridge health.
+4. Run `hermes-chrome doctor --skip-update` to verify companion + bridge (install extension afterward for ready=true).
 5. If I use Cursor, Claude Desktop, or Grok, check that MCP is registered (~/.hermes/run/hermes-chrome/mcp-snippet.json).
 6. Remind me to install the Hermes Chrome extension from Chrome Web Store and click the extension icon once to connect.
 ```

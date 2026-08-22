@@ -20,7 +20,7 @@ It is **not locked to one product or domain**. Open GitHub, docs, dashboards, ne
 • Talks only to a local companion bridge on 127.0.0.1:19876
 • Native Messaging host so the bridge can auto-start when you click the icon
 • Tab capture (PNG stays on-device) and light DOM helpers for agent workflows
-• Popup status + offline Guide; offline popup shows Setup required when companion is missing
+• Popup status + offline Guide; offline popup shows Setup needed when companion is missing
 
 **Who it is for**
 Developers using Hermes Agent, Grok, Cursor, Claude Desktop, or any local CLI that needs authenticated browser flows while keeping personal browsing separate from agent work.

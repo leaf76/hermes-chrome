@@ -19,7 +19,7 @@
 
 **就緒** = popup 顯示 Bridge **online** + Auth **ready**，且 `hermes-chrome.sh --json ping` 成功。
 
-若 popup 顯示 **Setup required**，代表還沒裝 companion 或 bridge 沒起來 — 照 popup 上的指令（或下方第 1 步）即可。**只裝商店版時出現這個畫面是正常的。**
+若 popup 顯示 **Setup needed**，代表還沒裝 companion 或 bridge 沒起來 — 照 popup 上的指令（或下方第 1 步）即可。**只裝商店版時出現這個畫面是正常的。**
 
 ### 更新
 
@@ -57,7 +57,7 @@ Chrome 安全限制：光裝 extension **不能**對外開控制 port。請**先
    - macOS / Linux：執行 `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
    - Windows：clone https://github.com/leaf76/hermes-chrome.git 並執行 `powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1`
 3. 確保 `~/.local/bin` 已加入 PATH（若無，請將 `export PATH="$HOME/.local/bin:$PATH"` 寫入我的 shell rc 檔案）。
-4. 執行 `hermes-chrome doctor` 驗證本地 Bridge 與 Companion 健康狀態。
+4. 執行 `hermes-chrome doctor --skip-update` 驗證 companion + bridge（extension 可之後再裝）。
 5. 若我使用 Cursor、Claude Desktop 或 Grok，請確認 MCP 設定已註冊（可參考 `~/.hermes/run/hermes-chrome/mcp-snippet.json`）。
 6. 最後提醒我到 Chrome 商店安裝 Hermes Chrome 擴充功能，並點擊一次圖示以完成配對。
 ```

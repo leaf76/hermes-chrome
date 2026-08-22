@@ -55,12 +55,21 @@ def load_policy() -> dict[str, Any]:
         if p.is_file():
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    merged = {**_DEFAULT_POLICY, **data}
-                    merged["_path"] = str(p)
-                    return merged
             except (OSError, json.JSONDecodeError):
-                continue
+                return {
+                    **_DEFAULT_POLICY,
+                    "_path": str(p),
+                    "_invalid": True,
+                }
+            if not isinstance(data, dict):
+                return {
+                    **_DEFAULT_POLICY,
+                    "_path": str(p),
+                    "_invalid": True,
+                }
+            merged = {**_DEFAULT_POLICY, **data}
+            merged["_path"] = str(p)
+            return merged
     return {**_DEFAULT_POLICY, "_path": None}
 
 
@@ -108,6 +117,20 @@ def _host_is_private(host: str) -> bool:
 def check_host_policy(url: str, policy: dict[str, Any] | None = None) -> dict[str, Any]:
     policy = policy if policy is not None else load_policy()
     findings: list[dict[str, Any]] = []
+    if policy.get("_invalid"):
+        findings.append(
+            {
+                "level": "block",
+                "code": "policy_invalid",
+                "message": f"policy file unreadable or invalid: {policy.get('_path')}",
+            }
+        )
+        return {
+            "ok": False,
+            "host": (urlparse(url).hostname or "").lower(),
+            "policy_path": policy.get("_path"),
+            "findings": findings,
+        }
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     scheme = (parsed.scheme or "").lower()

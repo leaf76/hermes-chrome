@@ -34,6 +34,15 @@ ENV_FILE = RUN_DIR / "bridge.env"
 CWS_EXTENSION_ID = "mkoaoadlkijccmmbkioagnlngbbeocfa"
 NATIVE_HOST_NAME = "com.leaf76.hermes_chrome"
 
+# Keep in sync with bridge.py _MAX_RESULT_BYTES (base64 JSON over /v1/result).
+BRIDGE_MAX_RESULT_BYTES = int(
+    os.environ.get("HERMES_CHROME_BRIDGE_MAX_RESULT", str(12 * 1024 * 1024))
+)
+# Raw body limit for extension fetch_url → base64 result payloads.
+BRIDGE_FETCH_MAX_RAW_BYTES = max(
+    1024, (BRIDGE_MAX_RESULT_BYTES * 3) // 4 - 4096
+)
+
 _bridge_proc: subprocess.Popen | None = None
 
 
@@ -214,3 +223,34 @@ def ensure_and_pair(timeout_s: float = 8.0, **kwargs: Any) -> dict[str, Any]:
     out["root"] = str(ROOT)
     out["native_host"] = NATIVE_HOST_NAME
     return out
+
+
+def wait_extension(
+    timeout_s: float = 25.0,
+    *,
+    ensure: bool = True,
+    log_name: str = "bridge.runtime.log",
+    prefix: str = "hermes-chrome",
+) -> dict[str, Any]:
+    """Wait until extension_connected; re-open pairing periodically."""
+    if ensure:
+        ensure_bridge(timeout_s=min(8.0, timeout_s), log_name=log_name, prefix=prefix)
+    deadline = time.time() + timeout_s
+    last: dict[str, Any] = {}
+    last_pair_at = 0.0
+    while time.time() < deadline:
+        last = health()
+        if last.get("extension_connected"):
+            return last
+        now = time.time()
+        if now - last_pair_at >= 5.0:
+            pair_open()
+            last_pair_at = now
+        time.sleep(0.5)
+    last = dict(last or health())
+    last["ok"] = False
+    last["error"] = (
+        "extension not connected. Install/enable Hermes Chrome, click the icon "
+        "once, and wait for auto-pair (or popup → Pair)."
+    )
+    return last

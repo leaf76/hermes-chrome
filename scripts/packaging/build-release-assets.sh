@@ -33,6 +33,11 @@ if [[ -z "$VERSION" ]]; then
 fi
 # strip leading v
 VERSION="${VERSION#v}"
+MANIFEST_VER="$(python3 -c "import json; print(json.load(open('extension/manifest.json'))['version'])")"
+if [[ "$VERSION" != "$MANIFEST_VER" ]]; then
+  echo "[release] error: version=$VERSION != manifest.json=$MANIFEST_VER" >&2
+  exit 1
+fi
 
 OUT_DIR="${OUT_DIR:-$ROOT/dist/release}"
 STAGE="${OUT_DIR}/_stage"
@@ -73,15 +78,11 @@ if [[ -x "$ROOT/store/package.sh" || -f "$ROOT/store/package.sh" ]]; then
   bash "$ROOT/store/package.sh"
   EXT_ZIP_SRC="$ROOT/store/dist/hermes-chrome-v${VERSION}.zip"
   if [[ ! -f "$EXT_ZIP_SRC" ]]; then
-    # package.sh uses manifest version — should match
-    EXT_ZIP_SRC="$(ls -1 "$ROOT/store/dist"/hermes-chrome-v*.zip 2>/dev/null | tail -1 || true)"
+    echo "[release] error: extension zip missing at $EXT_ZIP_SRC (run store/package.sh)" >&2
+    exit 1
   fi
-  if [[ -n "$EXT_ZIP_SRC" && -f "$EXT_ZIP_SRC" ]]; then
-    cp "$EXT_ZIP_SRC" "$EXT_ZIP_DST"
-    echo "[release] wrote $EXT_ZIP_DST"
-  else
-    echo "[release] warn: extension zip not found" >&2
-  fi
+  cp "$EXT_ZIP_SRC" "$EXT_ZIP_DST"
+  echo "[release] wrote $EXT_ZIP_DST"
 fi
 
 # Standalone installers for release assets (pinned URL convenience)

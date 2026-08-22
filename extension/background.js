@@ -11,6 +11,12 @@
  */
 
 const DEFAULT_BRIDGE = "http://127.0.0.1:19876";
+// Keep in sync with bridge.py _MAX_RESULT_BYTES (base64 JSON over /v1/result).
+const BRIDGE_RESULT_MAX_BYTES = 12 * 1024 * 1024;
+const BRIDGE_FETCH_DEFAULT_MAX_BYTES = Math.max(
+  1024,
+  Math.floor((BRIDGE_RESULT_MAX_BYTES * 3) / 4) - 4096
+);
 const NATIVE_HOST_NAME = "com.leaf76.hermes_chrome";
 const GROUP_TITLE = "Hermes";
 const GROUP_COLOR = "blue";
@@ -319,8 +325,10 @@ async function status() {
   let pairingOpen = null;
   let bridgeHealth = null;
   try {
+    const headers = await authHeaders();
     const res = await fetch(`${settings.bridgeUrl}/v1/health`, {
       cache: "no-store",
+      headers,
     });
     bridgeOk = res.ok;
     if (res.ok) {
@@ -1079,7 +1087,10 @@ async function fetchUrl(cmd) {
   }
   const maxBytes = Math.max(
     1024,
-    Math.min(Number(cmd.maxBytes) || 50 * 1024 * 1024, 80 * 1024 * 1024)
+    Math.min(
+      Number(cmd.maxBytes) || BRIDGE_FETCH_DEFAULT_MAX_BYTES,
+      BRIDGE_FETCH_DEFAULT_MAX_BYTES
+    )
   );
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Number(cmd.timeoutMs) || 60000);
@@ -1291,15 +1302,21 @@ async function handleCommand(cmd) {
 }
 
 async function postResult(bridge, id, payload) {
-  try {
-    const headers = await authHeaders({ "Content-Type": "application/json" });
-    await fetch(`${bridge}/v1/result`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ id, ...payload }),
-    });
-  } catch (e) {
-    console.warn("postResult failed", e);
+  const headers = await authHeaders({ "Content-Type": "application/json" });
+  const res = await fetch(`${bridge}/v1/result`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ id, ...payload }),
+  });
+  if (!res.ok) {
+    let msg = `postResult HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && body.error) msg = String(body.error);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
   }
 }
 

@@ -238,7 +238,7 @@ Write-Host "MCP:     $McpPy"
 Write-Host "This was step 1 of 2. Extension alone is never enough."
 Write-Host "Not on npm — companion is this tree (GitHub)."
 Write-Host ""
-Write-Host "=== Next: browser half (extension v1.7+ — CWS or Load unpacked) ===" -ForegroundColor Cyan
+Write-Host "=== Next: browser half (extension v1.8+ — CWS or Load unpacked) ===" -ForegroundColor Cyan
 Write-Host "1. Install/enable Hermes Chrome (nativeMessaging permission)"
 Write-Host "2. Reload extension → click icon once (native host starts bridge)"
 Write-Host "3. Wait for auto-pair, or click Pair — Ready: popup says Connected"

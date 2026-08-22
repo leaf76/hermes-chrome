@@ -1,6 +1,6 @@
 # hermes-chrome
 
-**Current:** companion + extension **v1.8.5** · **License:** [MIT](LICENSE)
+**Current:** companion + extension **v1.8.6** · **License:** [MIT](LICENSE)
 
 | | |
 |--|--|
@@ -43,9 +43,9 @@ Please set up the Hermes Chrome companion on my machine for Chrome automation:
 1. Detect my OS (macOS/Linux/Windows).
 2. Install the companion:
    - macOS / Linux: run `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
-   - Windows: clone https://github.com/leaf76/hermes-chrome.git and run `powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1`
+   - Windows: `npx hermes-chrome-companion install` or clone https://github.com/leaf76/hermes-chrome.git and run `powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1`
 3. Ensure `~/.local/bin` is in my PATH (add `export PATH="$HOME/.local/bin:$PATH"` to my shell profile if missing).
-4. Run `hermes-chrome doctor` to verify companion and bridge health.
+4. Run `hermes-chrome doctor --skip-update` to verify companion + bridge (install extension afterward for ready=true).
 5. If I use Cursor, Claude Desktop, or Grok, check that MCP is registered (~/.hermes/run/hermes-chrome/mcp-snippet.json).
 6. Remind me to install the Hermes Chrome extension from https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa and click the extension icon once to connect.
 ```
@@ -184,7 +184,7 @@ Then the browser half:
 1. Install/enable **Hermes Chrome v1.8.5** ([Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) or Load unpacked → `./extension`)
 2. Accept **nativeMessaging** if prompted → **Reload** → click icon once
 3. Wait for auto-pair (or popup → **Pair**). If Bridge is offline, popup shows
-   **Setup required** with the companion command — not a broken install alone.
+   **Setup needed** with the companion command — not a broken install alone.
 4. **CLI users:** done — `hermes-chrome.sh --json ping`  
    **MCP users:** restart agent session so `hermes_chrome_*` tools load
 5. Smoke: `hermes_chrome_status` / `capture` (MCP) or CLI equivalents

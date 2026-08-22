@@ -29,8 +29,15 @@ from analyze_file import analyze_file  # noqa: E402
 from check_url import check_url  # noqa: E402
 from net_util import curl_available, curl_download, ssl_context  # noqa: E402
 
-DEFAULT_MAX_BYTES = int(
-    os.environ.get("HERMES_CHROME_DOWNLOAD_MAX_BYTES", str(50 * 1024 * 1024))
+_BRIDGE_MAX_RESULT = int(
+    os.environ.get("HERMES_CHROME_BRIDGE_MAX_RESULT", str(12 * 1024 * 1024))
+)
+# Raw limit for extension fetch_url base64 payloads (/v1/result JSON cap).
+_BRIDGE_FETCH_MAX_RAW = max(1024, (_BRIDGE_MAX_RESULT * 3) // 4 - 4096)
+
+DEFAULT_MAX_BYTES = min(
+    int(os.environ.get("HERMES_CHROME_DOWNLOAD_MAX_BYTES", str(50 * 1024 * 1024))),
+    _BRIDGE_FETCH_MAX_RAW,
 )
 DEFAULT_BRIDGE = os.environ.get("HERMES_CHROME_BRIDGE", "http://127.0.0.1:19876").rstrip(
     "/"

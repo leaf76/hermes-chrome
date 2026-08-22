@@ -19,7 +19,7 @@ Hermes Chrome 是**本機 agent companion**：讓 AI agent / CLI 操作你真實
 • 只連本機 bridge（127.0.0.1:19876）
 • Native Messaging host：點 icon 可自動起 bridge
 • 本機分頁截圖與輕量 DOM 輔助（PNG 只留在本機）
-• Popup 狀態 + 離線教學（Guide）；未裝 companion 時顯示 Setup required
+• Popup 狀態 + 離線教學（Guide）；未裝 companion 時顯示 Setup needed
 
 **適用對象**
 使用 Hermes、Grok、Cursor、Claude Desktop 或其他本機 CLI、需要帶 cookie/SSO 瀏覽器流程的開發者。

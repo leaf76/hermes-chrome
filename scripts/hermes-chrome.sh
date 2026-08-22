@@ -2,9 +2,8 @@
 # Hermes Chrome — operate daily Chrome from Hermes / local agent CLI.
 #
 # Requires:
-#   1) Bridge: auto-starts <repo>/bridge.py
-#   2) Extension loaded (unpacked) once from <repo>/extension
-#        chrome://extensions → Developer mode → Load unpacked
+#   1) Companion: install.sh / install-for-agent (bridge + native host)
+#   2) Hermes Chrome extension (CWS or Load unpacked from extension/)
 #   3) Click extension icon once so the service worker starts polling
 #
 # Usage:

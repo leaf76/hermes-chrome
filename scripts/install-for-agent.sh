@@ -120,7 +120,7 @@ MCP:      ${MCP_PY}
 This was step 1 of 2. Extension alone is never enough.
 Not on npm — companion is this tree (or ~/.hermes/hermes-chrome via install.sh).
 
-=== Next: browser half (extension v1.7+) ===
+=== Next: browser half (extension v1.8+ — CWS or Load unpacked) ===
 1. Install/enable Hermes Chrome
    - Chrome Web Store, or Load unpacked: ${ROOT}/extension
    - Accept nativeMessaging if prompted

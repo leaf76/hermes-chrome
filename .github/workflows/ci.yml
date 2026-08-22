@@ -32,6 +32,11 @@ jobs:
       - name: Compile and unit tests
         run: chmod +x scripts/ci-check.sh && ./scripts/ci-check.sh
 
+      - name: Package extension zip
+        run: |
+          chmod +x store/package.sh
+          bash store/package.sh
+
   codeql:
     runs-on: ubuntu-latest
     steps:

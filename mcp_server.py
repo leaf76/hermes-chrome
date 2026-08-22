@@ -24,17 +24,14 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 # ---------------------------------------------------------------------------
-# Paths / bridge
+# Paths / bridge (shared with native host via lib/bridge_runtime.py)
 # ---------------------------------------------------------------------------
 
 ROOT = Path(
@@ -43,16 +40,15 @@ ROOT = Path(
 ).resolve()
 if str(ROOT / "lib") not in sys.path:
     sys.path.insert(0, str(ROOT / "lib"))
-from version_util import mismatch, product_version  # noqa: E402
-BRIDGE_PY = ROOT / "bridge.py"
-RUN_DIR = Path(
-    os.environ.get("HERMES_CHROME_RUN")
-    or Path.home() / ".hermes" / "run" / "hermes-chrome"
+from bridge_runtime import (  # noqa: E402
+    BRIDGE_PY,
+    RUN_DIR,
+    ensure_bridge as _rt_ensure_bridge,
+    health,
+    http_json,
+    wait_extension as _rt_wait_extension,
 )
-HOST = os.environ.get("HERMES_CHROME_BRIDGE_HOST", "127.0.0.1")
-PORT = int(os.environ.get("HERMES_CHROME_BRIDGE_PORT", "19876"))
-BRIDGE_URL = f"http://{HOST}:{PORT}"
-ENV_FILE = RUN_DIR / "bridge.env"
+from version_util import mismatch, product_version  # noqa: E402
 
 SERVER_NAME = "hermes-chrome"
 SERVER_VERSION = product_version(ROOT)
@@ -75,8 +71,6 @@ _DROP_KEYS = frozenset(
         "pid",
     }
 )
-
-_bridge_proc: subprocess.Popen | None = None
 
 
 def _log(msg: str) -> None:
@@ -188,159 +182,22 @@ def cap_json(obj: Any, budget: int = AGENT_JSON_MAX) -> Any:
     return {"ok": False, "truncated": True, "chars": len(raw), "preview": preview}
 
 
-def _load_token() -> str:
-    tok = (
-        os.environ.get("HERMES_CHROME_BRIDGE_TOKEN")
-        or os.environ.get("HERMES_TABGROUP_BRIDGE_TOKEN")
-        or ""
-    ).strip()
-    if tok:
-        return tok
-    if not ENV_FILE.is_file():
-        return ""
-    try:
-        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("export "):
-                line = line[len("export ") :].strip()
-            if not line.startswith("HERMES_CHROME_BRIDGE_TOKEN="):
-                continue
-            _, _, val = line.partition("=")
-            return val.strip().strip("'").strip('"')
-    except OSError:
-        return ""
-    return ""
-
-
-def _headers(json_body: bool = False) -> dict[str, str]:
-    h: dict[str, str] = {}
-    if json_body:
-        h["Content-Type"] = "application/json"
-    tok = _load_token()
-    if tok:
-        h["X-Hermes-Chrome-Token"] = tok
-    return h
-
-
-def _http_json(
-    method: str,
-    path: str,
-    *,
-    body: dict | None = None,
-    timeout: float = 30.0,
-) -> tuple[int, Any]:
-    url = f"{BRIDGE_URL}{path}"
-    data = None if body is None else json.dumps(body).encode("utf-8")
-    req = Request(
-        url,
-        data=data,
-        method=method,
-        headers=_headers(json_body=body is not None),
-    )
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            code = resp.getcode() or 200
-            if not raw:
-                return code, None
-            return code, json.loads(raw.decode("utf-8"))
-    except HTTPError as e:
-        raw = e.read() if e.fp else b""
-        try:
-            payload = json.loads(raw.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            payload = {"ok": False, "error": raw.decode("utf-8", errors="replace")[:500]}
-        return e.code, payload
-    except URLError as e:
-        return 0, {"ok": False, "error": f"bridge unreachable: {e.reason}"}
-
-
-def health() -> dict[str, Any]:
-    code, payload = _http_json("GET", "/v1/health", timeout=2.0)
-    if code == 200 and isinstance(payload, dict):
-        return payload
-    return {
-        "ok": False,
-        "bridge": "down",
-        "error": (payload or {}).get("error") if isinstance(payload, dict) else "down",
-    }
-
-
 def ensure_bridge(timeout_s: float = 8.0) -> dict[str, Any]:
     """Start bridge.py if /v1/health is down. Returns health payload."""
-    global _bridge_proc
-    h = health()
-    if h.get("ok") is True or h.get("service") == "hermes-chrome-bridge":
-        return h
-
-    if not BRIDGE_PY.is_file():
-        return {
-            "ok": False,
-            "error": f"missing bridge.py at {BRIDGE_PY}",
-            "hint": "Set HERMES_CHROME_ROOT to the hermes-chrome repo root",
-        }
-
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = RUN_DIR / "bridge.mcp.log"
-    env = os.environ.copy()
-    env["HERMES_CHROME_RUN"] = str(RUN_DIR)
-    env["HERMES_CHROME_BRIDGE_HOST"] = HOST
-    env["HERMES_CHROME_BRIDGE_PORT"] = str(PORT)
-
-    _log(f"starting bridge: {BRIDGE_PY}")
-    try:
-        log_f = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
-        _bridge_proc = subprocess.Popen(
-            [sys.executable, str(BRIDGE_PY)],
-            cwd=str(ROOT),
-            env=env,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        (RUN_DIR / "bridge.pid").write_text(str(_bridge_proc.pid), encoding="utf-8")
-    except OSError as e:
-        return {"ok": False, "error": f"failed to start bridge: {e}"}
-
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        h = health()
-        if h.get("ok") is True or h.get("service") == "hermes-chrome-bridge":
-            # Nudge pairing so CWS extension can auto-pair while quiet.
-            _http_json("POST", "/v1/pair-open", body={}, timeout=3.0)
-            return h
-        time.sleep(0.15)
-
-    return {
-        "ok": False,
-        "error": f"bridge did not become healthy within {timeout_s}s",
-        "log": str(log_path),
-        "hint": "Check Python can run bridge.py; ensure port 19876 is free",
-    }
+    return _rt_ensure_bridge(
+        timeout_s=timeout_s,
+        log_name="bridge.mcp.log",
+        prefix="hermes-chrome-mcp",
+    )
 
 
 def wait_extension(timeout_s: float = 25.0) -> dict[str, Any]:
     """Wait until extension_connected, re-opening pairing periodically."""
-    ensure_bridge()
-    deadline = time.time() + timeout_s
-    last: dict[str, Any] = {}
-    while time.time() < deadline:
-        last = health()
-        if last.get("extension_connected"):
-            return last
-        if int(time.time()) % 5 == 0:
-            _http_json("POST", "/v1/pair-open", body={}, timeout=2.0)
-        time.sleep(0.5)
-    last = last or health()
-    last = dict(last)
-    last["ok"] = False
-    last["error"] = (
-        "extension not connected. Install/enable Hermes Chrome, click the icon "
-        "once, and wait for auto-pair (or popup → Pair). "
-        f"health={json.dumps({k: last.get(k) for k in ('auth','pairing_open','extension_last_seen_s','extension_version')})}"
+    return _rt_wait_extension(
+        timeout_s=timeout_s,
+        log_name="bridge.mcp.log",
+        prefix="hermes-chrome-mcp",
     )
-    return last
 
 
 def send_command(action: str, extra: dict[str, Any] | None = None, *, wait_s: float = 30.0) -> dict[str, Any]:
@@ -353,7 +210,7 @@ def send_command(action: str, extra: dict[str, Any] | None = None, *, wait_s: fl
     if extra:
         payload.update(extra)
 
-    code, enq = _http_json("POST", "/v1/command", body=payload, timeout=15.0)
+    code, enq = http_json("POST", "/v1/command", body=payload, timeout=15.0)
     if code != 200 or not isinstance(enq, dict) or not enq.get("id"):
         return {
             "ok": False,
@@ -361,7 +218,7 @@ def send_command(action: str, extra: dict[str, Any] | None = None, *, wait_s: fl
             "detail": enq,
         }
     rid = enq["id"]
-    rcode, result = _http_json(
+    rcode, result = http_json(
         "GET", f"/v1/result/{rid}?timeout={int(max(5, wait_s))}", timeout=wait_s + 15
     )
     if rcode != 200 or not isinstance(result, dict):
@@ -442,11 +299,11 @@ def capture_png(
         return h
 
     payload = {"id": str(uuid.uuid4()), "action": "capture", **extra}
-    code, enq = _http_json("POST", "/v1/command", body=payload, timeout=15.0)
+    code, enq = http_json("POST", "/v1/command", body=payload, timeout=15.0)
     if code != 200 or not isinstance(enq, dict):
         return {"ok": False, "error": "enqueue capture failed", "detail": enq}
     rid = enq.get("id") or payload["id"]
-    rcode, result = _http_json("GET", f"/v1/result/{rid}?timeout=75", timeout=90.0)
+    rcode, result = http_json("GET", f"/v1/result/{rid}?timeout=75", timeout=90.0)
     if rcode != 200 or not isinstance(result, dict) or not result.get("ok"):
         return {
             "ok": False,

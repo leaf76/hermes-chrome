@@ -13,9 +13,9 @@ const AI_INSTALL_PROMPT = [
   "1. Detect my OS (macOS/Linux/Windows).",
   "2. Install the companion:",
   "   - macOS / Linux: run `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`",
-  "   - Windows: clone https://github.com/leaf76/hermes-chrome.git and run `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-windows.ps1`",
+  "   - Windows: `npx hermes-chrome-companion install` or clone https://github.com/leaf76/hermes-chrome.git and run `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-windows.ps1`",
   "3. Ensure `~/.local/bin` is in my PATH (add `export PATH=\"$HOME/.local/bin:$PATH\"` to my shell profile if missing).",
-  "4. Run `hermes-chrome doctor` to verify companion and bridge health.",
+  "4. Run `hermes-chrome doctor --skip-update` to verify companion + bridge (extension can be installed after).",
   "5. If I use Cursor, Claude Desktop, or Grok, check that MCP is registered (~/.hermes/run/hermes-chrome/mcp-snippet.json).",
   "6. Remind me to install the Hermes Chrome extension from Chrome Web Store and click the extension icon once to connect.",
 ].join("\n");
@@ -177,16 +177,16 @@ function showInstallSteps(opts) {
   if (els.setupCmd) els.setupCmd.textContent = CMD_INSTALL;
   if (els.setupCmdLabel) {
     els.setupCmdLabel.textContent =
-      "macOS / Linux — paste in Terminal (no npm; needs Python 3 + git):";
+      "macOS / Linux — paste in Terminal (GitHub installer; runtime not on npm):";
   }
   if (els.setupCmdAlt) {
     els.setupCmdAlt.hidden = false;
     els.setupCmdAlt.innerHTML =
       "Installs to <code class=\"inline\">~/.hermes/hermes-chrome</code> + PATH " +
       "<code class=\"inline\">hermes-chrome</code>. " +
-      "Windows: clone the repo, then " +
-      "<code class=\"inline\">.\\scripts\\install-windows.ps1</code>. " +
-      "Optional MCP is registered for Grok/Cursor/Claude when present.";
+      "Windows: <code class=\"inline\">npx hermes-chrome-companion install</code> or " +
+      "<code class=\"inline\">.\\scripts\\install-windows.ps1</code> from a GitHub clone. " +
+      "Optional thin npm wrapper only — not the runtime. MCP registers for Grok/Cursor/Claude when present.";
   }
   if (els.setupStep3) {
     els.setupStep3.textContent =
@@ -214,9 +214,8 @@ function showPairPanel(s) {
   if (els.pairLead) {
     els.pairLead.innerHTML = s.pairingOpen
       ? "No Terminal step needed while pairing is open."
-      : "Open Terminal, <code class=\"inline\">cd</code> into the " +
-        "<strong>hermes-chrome folder you cloned from GitHub</strong> " +
-        "(not npm — there is no npm package), then run:";
+      : "Open Terminal and run <code class=\"inline\">hermes-chrome pair-open</code> " +
+        "(or paste token from bridge.env into Options):";
   }
   if (els.pairCmdBox) els.pairCmdBox.hidden = !!s.pairingOpen;
   if (els.pairCmd) {
@@ -335,11 +334,13 @@ function updateUserFacing(s) {
       }
       showInstallSteps({
         tone: "error",
-        heading: "Install companion (GitHub — not npm)",
+        heading: "Install companion (GitHub — runtime not on npm)",
         leadHtml:
-          "There is <strong>no npm package</strong>. Run the one-liner below to install the " +
-          "local companion to <code class=\"inline\">~/.hermes/hermes-chrome</code> " +
-          "(bridge on <code class=\"inline\">127.0.0.1:19876</code> + Native Host + optional MCP).",
+          "The companion runtime is installed from <strong>GitHub</strong> (not npm). " +
+          "Run the one-liner below to install to " +
+          "<code class=\"inline\">~/.hermes/hermes-chrome</code> " +
+          "(bridge on <code class=\"inline\">127.0.0.1:19876</code> + Native Host + optional MCP). " +
+          "Optional: <code class=\"inline\">npx hermes-chrome-companion</code> runs the same installer.",
         note:
           "Needs Python 3 + git · Source: github.com/leaf76/hermes-chrome · " +
           "MCP is optional (same install, not a separate store).",

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hermes Chrome",
-  "version": "1.8.5",
+  "version": "1.8.6",
   "description": "Needs one-time local companion (GitHub). Agent tabs, capture, light automation; less focus-steal.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyObTS42FQR3eVKB20T6aX91mqZApJ+PFBCcb/L54Oo3k1f56fEsHOfoFLoIFA0YMm7vAU456ETOdgSIUtOeqSN7KuXLbw8/x7LlMq71PpCQ/6UX4fVNqIziqZNDCtofFffNL01cwKNj6Wukz/POvB49BDjA8sa78rK4sWg6EcrRTV66r2tpyVwlsFOJjeNirVVHlE8zLq+Lra/321y1/2B3AAjcPTG1fIopfghAxD88Xgjm8HDZ9pcI3uiH/snJCTj+JUMZ0Sfsox++4CBYFeaInqHIx9O45pS+PJilUjY2bzJP+0Q1FKOW2uFWp5Jl8bvXLZQoxEXfjIj779lQLNQIDAQAB",
   "permissions": [
