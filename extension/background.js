@@ -38,6 +38,26 @@ let nativeStatus = { ok: null, at: 0 };
 let lastNativeEnsureAt = 0;
 const NATIVE_ENSURE_MIN_INTERVAL_MS = 8000;
 
+// Open side panel on extension action icon click
+if (chrome.sidePanel?.setPanelBehavior) {
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((err) => {
+      console.warn("setPanelBehavior failed:", err);
+    });
+}
+if (chrome.action?.onClicked) {
+  chrome.action.onClicked.addListener(async (tab) => {
+    try {
+      if (chrome.sidePanel?.open) {
+        await chrome.sidePanel.open({ windowId: tab.windowId });
+      }
+    } catch (err) {
+      console.warn("Failed to open side panel on click:", err);
+    }
+  });
+}
+
 /** Only http(s) for agent navigation / open (block javascript:/file:/etc). */
 function assertHttpUrl(url, label = "url") {
   if (!url || typeof url !== "string") {
@@ -1539,6 +1559,105 @@ async function tryAutoPair(reason = "poll") {
   }
 }
 
+const ACTION_HISTORY_KEY = "hermes_action_history";
+const MAX_ACTION_HISTORY = 80;
+
+function getActionStorage() {
+  return chrome.storage.session || chrome.storage.local;
+}
+
+function sanitizeResultForLog(action, data) {
+  if (!data) return data;
+  if (action === "capture" && typeof data === "object") {
+    const img = data.image || data.dataUrl || data.data;
+    if (img && typeof img === "string") {
+      const preview = img.startsWith("data:") ? img : `data:image/png;base64,${img}`;
+      return {
+        ...data,
+        imagePreview: preview,
+      };
+    }
+  }
+  return data;
+}
+
+function sanitizeParamsForLog(action, params) {
+  if (!params || typeof params !== "object") return params;
+  const copy = { ...params };
+  delete copy.token;
+  delete copy["X-Hermes-Chrome-Token"];
+  if (action === "type" || action === "fill") {
+    const selector = String(copy.selector || "").toLowerCase();
+    if (copy.sensitive || selector.includes("password") || selector.includes("secret")) {
+      copy.text = "••••••••";
+    }
+  }
+  return copy;
+}
+
+async function recordActionStart(cmd) {
+  const startTime = Date.now();
+  const entry = {
+    id: cmd.id,
+    action: cmd.action,
+    params: sanitizeParamsForLog(cmd.action, cmd),
+    startTime,
+    status: "running",
+  };
+  chrome.runtime.sendMessage({
+    type: "hermes_action_event",
+    phase: "start",
+    entry,
+  }).catch(() => {});
+
+  try {
+    const area = getActionStorage();
+    const res = await area.get([ACTION_HISTORY_KEY]);
+    const history = Array.isArray(res[ACTION_HISTORY_KEY]) ? res[ACTION_HISTORY_KEY] : [];
+    history.unshift(entry);
+    if (history.length > MAX_ACTION_HISTORY) {
+      history.length = MAX_ACTION_HISTORY;
+    }
+    await area.set({ [ACTION_HISTORY_KEY]: history });
+  } catch {
+    /* ignore storage error */
+  }
+  return startTime;
+}
+
+async function recordActionEnd(cmd, ok, data, error, startTime) {
+  const endTime = Date.now();
+  const durationMs = Math.max(0, endTime - startTime);
+  const update = {
+    id: cmd.id,
+    action: cmd.action,
+    status: ok ? "success" : "error",
+    endTime,
+    durationMs,
+    data: data ? sanitizeResultForLog(cmd.action, data) : undefined,
+    error: error ? String(error) : undefined,
+  };
+
+  chrome.runtime.sendMessage({
+    type: "hermes_action_event",
+    phase: "end",
+    update,
+  }).catch(() => {});
+
+  try {
+    const area = getActionStorage();
+    const res = await area.get([ACTION_HISTORY_KEY]);
+    const history = Array.isArray(res[ACTION_HISTORY_KEY]) ? res[ACTION_HISTORY_KEY] : [];
+    const idx = history.findIndex((item) => item.id === cmd.id);
+    if (idx !== -1) {
+      history[idx] = { ...history[idx], ...update };
+      await area.set({ [ACTION_HISTORY_KEY]: history });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 async function pollOnce(bridge) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 28000);
@@ -1575,14 +1694,18 @@ async function pollOnce(bridge) {
     if (res.status === 204 || res.status === 404 || !res.ok) return;
     const cmd = await res.json();
     if (!cmd || !cmd.id) return;
+    const startTime = await recordActionStart(cmd);
     try {
       const data = await handleCommand(cmd);
       await postResult(bridge, cmd.id, { ok: true, data });
+      await recordActionEnd(cmd, true, data, null, startTime);
     } catch (e) {
+      const errStr = String(e?.message || e);
       await postResult(bridge, cmd.id, {
         ok: false,
-        error: String(e?.message || e),
+        error: errStr,
       });
+      await recordActionEnd(cmd, false, null, errStr, startTime);
     }
   } catch {
     /* bridge down / abort */
@@ -1760,6 +1883,51 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, tokenSet: !!merged.bridgeToken });
       });
     });
+    return true;
+  }
+  if (msg?.type === "get_action_history") {
+    (async () => {
+      try {
+        const area = getActionStorage();
+        const res = await area.get([ACTION_HISTORY_KEY]);
+        sendResponse({ ok: true, history: res[ACTION_HISTORY_KEY] || [] });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e?.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg?.type === "clear_action_history") {
+    (async () => {
+      try {
+        const area = getActionStorage();
+        await area.remove([ACTION_HISTORY_KEY]);
+        chrome.runtime.sendMessage({ type: "hermes_action_history_cleared" }).catch(() => {});
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e?.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg?.type === "open_side_panel") {
+    (async () => {
+      try {
+        if (chrome.sidePanel?.open) {
+          let winId = msg.windowId;
+          if (!winId) {
+            const currentWin = await chrome.windows.getCurrent();
+            winId = currentWin.id;
+          }
+          await chrome.sidePanel.open({ windowId: winId });
+          sendResponse({ ok: true });
+        } else {
+          sendResponse({ ok: false, error: "sidePanel API not available" });
+        }
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e?.message || e) });
+      }
+    })();
     return true;
   }
   return false;

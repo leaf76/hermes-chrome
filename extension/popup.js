@@ -41,6 +41,7 @@ const els = {
   pairCmd: document.getElementById("pairCmd"),
   pairCmdBox: document.getElementById("pairCmdBox"),
   pairHint: document.getElementById("pairHint"),
+  btnSidePanel: document.getElementById("btnSidePanel"),
   btnPrimary: document.getElementById("btnPrimary"),
   btnSecondary: document.getElementById("btnSecondary"),
   btnCopyCmd: document.getElementById("btnCopyCmd"),
@@ -564,6 +565,17 @@ async function copyText(text, btn) {
   }
 }
 
+if (els.btnSidePanel) {
+  els.btnSidePanel.onclick = async () => {
+    try {
+      const win = await chrome.windows.getCurrent();
+      await chrome.runtime.sendMessage({ type: "open_side_panel", windowId: win.id });
+      window.close();
+    } catch {
+      /* ignore */
+    }
+  };
+}
 if (els.btnPrimary) {
   els.btnPrimary.onclick = () => runAction(primaryAction);
 }

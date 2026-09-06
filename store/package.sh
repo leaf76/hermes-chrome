@@ -15,8 +15,9 @@ rm -f "$OUT"
     manifest.json \
     background.js \
     popup.html popup.js popup.css \
+    sidepanel.html sidepanel.js sidepanel.css \
     options.html options.js \
-    help.html \
+    help.html help.js \
     icons/icon16.png icons/icon32.png icons/icon48.png icons/icon128.png
 )
 echo "Wrote $OUT"
@@ -31,8 +32,12 @@ need=[
     "popup.html",
     "popup.js",
     "popup.css",
+    "sidepanel.html",
+    "sidepanel.js",
+    "sidepanel.css",
     "options.html",
     "help.html",
+    "help.js",
     "icons/icon128.png",
 ]
 missing=[n for n in need if n not in names]

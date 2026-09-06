@@ -366,25 +366,6 @@ hermes-chrome.sh --json ping</pre>
         </p>
       </section>
     </main>
-    <script>
-      const body = document.body;
-      const btnEn = document.getElementById("btnEn");
-      const btnZh = document.getElementById("btnZh");
-      function show(lang) {
-        body.classList.toggle("show-zh", lang === "zh");
-        btnEn.classList.toggle("active", lang === "en");
-        btnZh.classList.toggle("active", lang === "zh");
-        try {
-          localStorage.setItem("hermesChromeHelpLang", lang);
-        } catch (_) {}
-      }
-      btnEn.onclick = () => show("en");
-      btnZh.onclick = () => show("zh");
-      try {
-        const saved = localStorage.getItem("hermesChromeHelpLang");
-        if (saved === "zh" || saved === "en") show(saved);
-        else if (navigator.language && navigator.language.toLowerCase().startsWith("zh")) show("zh");
-      } catch (_) {}
-    </script>
+    <script src="help.js"></script>
   </body>
 </html>

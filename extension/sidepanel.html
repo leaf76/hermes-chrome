@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hermes Chrome Side Panel</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <div class="panel-container">
+    <!-- Top Header -->
+    <header class="panel-header">
+      <div class="header-brand">
+        <img src="icons/icon48.png" alt="Hermes" class="brand-icon" />
+        <div class="brand-info">
+          <span class="brand-title">Hermes Chrome</span>
+          <span class="brand-subtitle">Agent Side Panel</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="header-status">
+          <div id="status-bridge" class="status-pill offline" title="Local Bridge Status (127.0.0.1:19876)">
+            <span class="status-dot"></span>
+            <span class="status-label">Bridge</span>
+          </div>
+          <div id="status-agent" class="status-pill offline" title="Hermes Agent Gateway Status (127.0.0.1:9119 / 8642)">
+            <span class="status-dot"></span>
+            <span class="status-label">Agent</span>
+          </div>
+        </div>
+        <button id="btn-sidepanel-options" class="icon-btn" title="Settings / Options">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Companion Notice Banner (shown when Bridge is disconnected or auth fails) -->
+    <div id="bridge-warning-banner" class="bridge-banner hidden">
+      <div class="banner-body">
+        <span id="banner-text" class="banner-text">Companion disconnected</span>
+      </div>
+      <div class="banner-actions">
+        <button id="btn-banner-pair" class="btn-banner-action primary">Pair</button>
+        <button id="btn-banner-guide" class="btn-banner-action">Guide</button>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="actions">
+        <span>Actions</span>
+        <span id="actions-badge" class="tab-badge">0</span>
+      </button>
+      <button class="nav-tab" data-tab="chat">
+        <span>Chat</span>
+      </button>
+      <button class="nav-tab" data-tab="workspace">
+        <span>Workspace</span>
+        <span id="workspace-badge" class="tab-badge">0</span>
+      </button>
+    </nav>
+
+    <!-- Tab Panes -->
+    <main class="tab-content">
+      <!-- 1. Actions Timeline Pane -->
+      <section id="pane-actions" class="tab-pane active">
+        <div class="pane-toolbar">
+          <div class="toolbar-left">
+            <span class="section-title">Browser Operations</span>
+          </div>
+          <div class="toolbar-right">
+            <button id="btn-clear-actions" class="icon-btn" title="Clear Action Log">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="actions-feed" class="actions-feed">
+          <div id="actions-empty" class="empty-state">
+            <div class="empty-title">Waiting for CLI actions</div>
+            <div class="empty-desc">Run commands in your terminal to see live execution:</div>
+            <code class="code-snippet">hermes-chrome open https://github.com</code>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Agent Chat Pane -->
+      <section id="pane-chat" class="tab-pane">
+        <div class="pane-toolbar chat-toolbar">
+          <div class="chat-toolbar-left">
+            <span class="session-label">Session:</span>
+            <select id="chat-session-select" class="session-dropdown" title="Select Hermes conversation session">
+              <option value="__auto__">Auto-follow Active</option>
+              <option value="__new__">+ New Chat</option>
+            </select>
+          </div>
+          <div class="toolbar-right">
+            <button id="btn-refresh-sessions" class="icon-btn" title="Refresh Sessions">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+              </svg>
+            </button>
+            <button id="btn-new-session" class="btn-subtle" title="Start New Session">New</button>
+          </div>
+        </div>
+
+        <!-- Live Chat Messages -->
+        <div id="chat-stream" class="chat-stream">
+          <div id="chat-empty" class="empty-state hermes-intro">
+            <div class="intro-title">What are we moving today?</div>
+            <div class="intro-desc">Send a task, prompt, or inspect tabs. I'll read the room and turn it into the next step.</div>
+            <div class="intro-quick-actions">
+              <button class="intro-action-chip" data-prompt="Please inspect the active tab and summarize its key content.">
+                <span>Summarize Active Tab</span>
+              </button>
+              <button class="intro-action-chip" data-prompt="Inspect the active tab layout and identify key interactive elements.">
+                <span>Inspect Page Layout</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Input & Context Bar -->
+        <div class="chat-input-area">
+          <div id="context-chip-bar" class="context-chip-bar">
+            <button id="btn-inject-context" class="context-chip" title="Extract current active tab URL and readable text">
+              <span>+ Current Tab</span>
+            </button>
+            <button id="btn-quick-summarize" class="context-chip" title="Ask Hermes to summarize current webpage">
+              <span>Summarize Page</span>
+            </button>
+            <button id="btn-quick-capture" class="context-chip" title="Capture active tab and ask Hermes">
+              <span>Capture & Ask</span>
+            </button>
+          </div>
+
+          <!-- Model & Reasoning Effort Popover -->
+          <div id="model-effort-popover" class="model-effort-popover hidden">
+            <div class="popover-header">
+              <span class="popover-title">Model & Reasoning</span>
+              <button type="button" id="btn-close-model-popover" class="popover-close-btn" title="Close picker">✕</button>
+            </div>
+
+            <!-- Reasoning Effort Section -->
+            <div class="popover-section">
+              <div class="popover-section-header">
+                <span class="popover-section-title">Reasoning Effort</span>
+                <span id="popover-current-effort-desc" class="popover-hint">High effort</span>
+              </div>
+              <div id="effort-segmented-bar" class="effort-segmented-bar">
+                <button type="button" class="effort-btn" data-effort="none" title="Off (no thinking)">Off</button>
+                <button type="button" class="effort-btn" data-effort="minimal" title="Minimal thinking">Min</button>
+                <button type="button" class="effort-btn" data-effort="low" title="Low effort">Low</button>
+                <button type="button" class="effort-btn" data-effort="medium" title="Medium effort">Med</button>
+                <button type="button" class="effort-btn active" data-effort="high" title="High effort">High</button>
+                <button type="button" class="effort-btn" data-effort="xhigh" title="Max effort">Max</button>
+              </div>
+            </div>
+
+            <!-- Model Selection Section -->
+            <div class="popover-section">
+              <div class="popover-section-header">
+                <span class="popover-section-title">Model</span>
+                <span id="popover-active-provider" class="popover-hint">Google Gemini</span>
+              </div>
+              <div class="model-search-box">
+                <input type="text" id="model-search-input" placeholder="Search models (e.g. gpt, sonnet, gemini)..." autocomplete="off" />
+              </div>
+              <div id="model-picker-list" class="model-picker-list">
+                <!-- Populated dynamically by JS -->
+              </div>
+              <div class="custom-model-box">
+                <input type="text" id="custom-model-input" placeholder="Or enter custom model ID..." />
+                <button type="button" id="btn-apply-custom-model" class="btn-subtle">Apply</button>
+              </div>
+            </div>
+          </div>
+
+          <form id="chat-form" class="chat-form">
+            <textarea id="chat-input" rows="1" placeholder="Message Hermes Agent... (Enter to send, Shift+Enter for newline)"></textarea>
+            <div class="composer-controls-row">
+              <div class="composer-left-tools">
+                <button type="button" id="composer-model-pill" class="model-pill-btn" title="Adjust reasoning effort or switch model">
+                  <span id="model-pill-name">gemini-3.8-flash</span>
+                  <span class="pill-dot">·</span>
+                  <span id="model-pill-effort" class="effort-pill-tag">High</span>
+                  <svg class="pill-chevron" viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
+                </button>
+              </div>
+              <button id="btn-send-chat" type="submit" class="btn-send" title="Send message">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <line x1="12" y1="19" x2="12" y2="5"></line>
+                  <polyline points="5 12 12 5 19 12"></polyline>
+                </svg>
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- 3. Workspace Tab Group Pane -->
+      <section id="pane-workspace" class="tab-pane">
+        <div class="pane-toolbar">
+          <div class="toolbar-left">
+            <span class="section-title">Hermes Workspace Tabs</span>
+          </div>
+          <div class="toolbar-right">
+            <button id="btn-refresh-workspace" class="icon-btn" title="Refresh Workspace">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="workspace-open-box">
+          <input type="url" id="ws-new-url" placeholder="https://..." />
+          <button id="btn-ws-open" class="btn-primary">Open</button>
+        </div>
+
+        <div id="workspace-tabs-list" class="workspace-tabs-list">
+          <!-- Populated by JS -->
+        </div>
+      </section>
+    </main>
+
+    <!-- Lightbox Modal for Screenshots -->
+    <div id="lightbox-modal" class="lightbox-modal hidden">
+      <div class="lightbox-content">
+        <button id="lightbox-close" class="lightbox-close">&times;</button>
+        <img id="lightbox-image" src="" alt="Screenshot Full View" />
+        <div id="lightbox-caption" class="lightbox-caption"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

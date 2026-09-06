@@ -31,6 +31,8 @@ import os
 import queue
 import re
 import secrets
+import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -390,6 +392,236 @@ def _read_body(handler: BaseHTTPRequestHandler, *, max_bytes: int) -> bytes | No
     return handler.rfile.read(length)
 
 
+def _hermes_state_db_path() -> Path | None:
+    env_p = os.environ.get("HERMES_STATE_DB")
+    if env_p:
+        p = Path(env_p).expanduser().resolve()
+        if p.is_file():
+            return p
+    default_p = Path.home() / ".hermes" / "state.db"
+    if default_p.is_file():
+        return default_p
+    return None
+
+
+def _get_hermes_sessions(limit: int = 30) -> list[dict]:
+    db_path = _hermes_state_db_path()
+    if not db_path:
+        return []
+    try:
+        uri = f"file:{db_path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, title, started_at,
+                   COALESCE(last_activity_at, started_at) as last_activity,
+                   message_count, model
+            FROM sessions
+            WHERE archived = 0
+            ORDER BY last_activity DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = [
+            {
+                "id": r["id"],
+                "title": r["title"] or "Untitled",
+                "started_at": r["started_at"],
+                "last_activity": r["last_activity"],
+                "message_count": r["message_count"],
+                "model": r["model"] or "",
+            }
+            for r in cur.fetchall()
+        ]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def _get_hermes_messages(session_id: str, limit: int = 150) -> list[dict]:
+    db_path = _hermes_state_db_path()
+    if not db_path or not session_id:
+        return []
+    try:
+        uri = f"file:{db_path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, role, content, reasoning, tool_calls, tool_name, timestamp
+            FROM messages
+            WHERE session_id = ? AND active = 1
+            ORDER BY timestamp ASC
+            LIMIT ?
+            """,
+            (session_id, limit),
+        )
+        rows = []
+        for r in cur.fetchall():
+            tool_calls = None
+            if r["tool_calls"]:
+                try:
+                    tool_calls = json.loads(r["tool_calls"])
+                except Exception:
+                    tool_calls = r["tool_calls"]
+            rows.append({
+                "id": r["id"],
+                "role": r["role"],
+                "content": r["content"] or "",
+                "reasoning": r["reasoning"] or "",
+                "tool_calls": tool_calls,
+                "tool_name": r["tool_name"] or "",
+                "timestamp": r["timestamp"],
+            })
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def _get_hermes_models_info() -> dict:
+    config_path = Path.home() / ".hermes" / "config.yaml"
+    cache_path = Path.home() / ".hermes" / "provider_models_cache.json"
+
+    current_model = "gemini-3.8-flash"
+    current_provider = "gemini"
+    current_effort = "high"
+
+    if config_path.is_file():
+        try:
+            text = config_path.read_text(encoding="utf-8")
+            m_prov = re.search(r"^\s*provider:\s*([^\s#]+)", text, re.MULTILINE)
+            if m_prov:
+                current_provider = m_prov.group(1).strip()
+            m_model = re.search(r"^\s*default:\s*([^\s#]+)", text, re.MULTILINE)
+            if m_model:
+                current_model = m_model.group(1).strip()
+            m_effort = re.search(r"^\s*reasoning_effort:\s*([^\s#]+)", text, re.MULTILINE)
+            if m_effort:
+                current_effort = m_effort.group(1).strip()
+        except Exception:
+            pass
+
+    provider_labels = {
+        "gemini": "Google Gemini",
+        "copilot": "GitHub Copilot",
+        "openrouter": "OpenRouter",
+        "xai-oauth": "xAI (Grok)",
+        "opencode-free": "OpenCode Free",
+        "copilot-acp": "Copilot ACP",
+    }
+
+    effort_options = [
+        {"value": "none", "label": "Off", "desc": "No thinking"},
+        {"value": "minimal", "label": "Min", "desc": "Minimal"},
+        {"value": "low", "label": "Low", "desc": "Low effort"},
+        {"value": "medium", "label": "Med", "desc": "Medium"},
+        {"value": "high", "label": "High", "desc": "High effort"},
+        {"value": "xhigh", "label": "Max", "desc": "Maximum effort"},
+    ]
+
+    providers_list = []
+    if cache_path.is_file():
+        try:
+            cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+            for p_id, p_data in cache_data.items():
+                if isinstance(p_data, dict) and "models" in p_data and isinstance(p_data["models"], list):
+                    models = p_data["models"]
+                    if models:
+                        providers_list.append({
+                            "id": p_id,
+                            "name": provider_labels.get(p_id, p_id.replace("-", " ").title()),
+                            "models": models,
+                        })
+        except Exception:
+            pass
+
+    def sort_key(p):
+        if p["id"] == current_provider:
+            return (0, p["name"])
+        return (1, p["name"])
+
+    providers_list.sort(key=sort_key)
+
+    return {
+        "ok": True,
+        "current_model": current_model,
+        "current_provider": current_provider,
+        "current_effort": current_effort,
+        "effort_options": effort_options,
+        "providers": providers_list,
+    }
+
+
+def _update_hermes_config(data: dict) -> dict:
+    config_path = Path.home() / ".hermes" / "config.yaml"
+    if not config_path.is_file():
+        return {"saved": False, "error": "config file not found"}
+    try:
+        text = config_path.read_text(encoding="utf-8")
+        updated_fields = {}
+        if "model" in data and isinstance(data["model"], str) and data["model"].strip():
+            new_m = data["model"].strip()
+            text = re.sub(r"(^\s*default:\s*)[^\s#]+", rf"\g<1>{new_m}", text, count=1, flags=re.MULTILINE)
+            updated_fields["model"] = new_m
+        if "provider" in data and isinstance(data["provider"], str) and data["provider"].strip():
+            new_p = data["provider"].strip()
+            text = re.sub(r"(^\s*provider:\s*)[^\s#]+", rf"\g<1>{new_p}", text, count=1, flags=re.MULTILINE)
+            updated_fields["provider"] = new_p
+        if "reasoning_effort" in data and isinstance(data["reasoning_effort"], str) and data["reasoning_effort"].strip():
+            new_e = data["reasoning_effort"].strip().lower()
+            text = re.sub(r"(^\s*reasoning_effort:\s*)[^\s#]+", rf"\g<1>{new_e}", text, count=1, flags=re.MULTILINE)
+            updated_fields["reasoning_effort"] = new_e
+        config_path.write_text(text, encoding="utf-8")
+        return {"saved": True, "fields": updated_fields}
+    except Exception as e:
+        return {"saved": False, "error": str(e)}
+
+
+def _run_hermes_cli_prompt(
+    prompt: str,
+    session_id: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    reasoning: str | None = None,
+) -> dict:
+    hermes_bin = shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
+    if not os.path.isfile(hermes_bin) and not shutil.which("hermes"):
+        return {"ok": False, "error": "Hermes CLI binary not found on system"}
+
+    cmd = [hermes_bin, "-z", prompt]
+    if session_id and session_id not in ("__auto__", "__new__"):
+        cmd.extend(["--resume", session_id])
+    elif session_id == "__auto__":
+        cmd.extend(["--resume", "latest"])
+
+    if model and isinstance(model, str) and model.strip():
+        cmd.extend(["-m", model.strip()])
+
+    if provider and isinstance(provider, str) and provider.strip():
+        cmd.extend(["--provider", provider.strip()])
+
+    if reasoning and isinstance(reasoning, str) and reasoning.strip().lower() not in ("none", "off"):
+        cmd.extend(["--reasoning", reasoning.strip().lower()])
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        out = proc.stdout.strip()
+        err = proc.stderr.strip()
+        if proc.returncode != 0:
+            return {"ok": False, "error": err or f"Hermes exited with code {proc.returncode}"}
+        return {"ok": True, "response": out}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Hermes CLI execution timed out after 120s"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         pass
@@ -456,6 +688,28 @@ class Handler(BaseHTTPRequestHandler):
                 408,
                 {"ok": False, "error": "timeout waiting for extension result"},
             )
+            return
+
+        if path == "/v1/hermes/sessions":
+            limit = int((qs.get("limit") or ["30"])[0])
+            limit = max(1, min(limit, 100))
+            sessions = _get_hermes_sessions(limit=limit)
+            _json_response(self, 200, {"ok": True, "sessions": sessions})
+            return
+
+        if path.startswith("/v1/hermes/sessions/") and path.endswith("/messages"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 5 and parts[0] == "v1" and parts[1] == "hermes" and parts[2] == "sessions" and parts[4] == "messages":
+                sid = parts[3]
+                limit = int((qs.get("limit") or ["150"])[0])
+                limit = max(1, min(limit, 300))
+                messages = _get_hermes_messages(session_id=sid, limit=limit)
+                _json_response(self, 200, {"ok": True, "session_id": sid, "messages": messages})
+                return
+
+        if path == "/v1/hermes/models":
+            models_info = _get_hermes_models_info()
+            _json_response(self, 200, models_info)
             return
 
         _json_response(self, 404, {"ok": False, "error": "not found"})
@@ -638,6 +892,33 @@ class Handler(BaseHTTPRequestHandler):
                 _results[rid] = (time.time() + _RESULT_TTL_S, body)
                 _results_cv.notify_all()
             _json_response(self, 200, {"ok": True})
+            return
+
+        if path == "/v1/hermes/config":
+            if not isinstance(body, dict):
+                _json_response(self, 400, {"ok": False, "error": "object required"})
+                return
+            updated = _update_hermes_config(body)
+            _json_response(self, 200, {"ok": True, "updated": updated})
+            return
+
+        if path == "/v1/hermes/prompt":
+            if not isinstance(body, dict) or not body.get("prompt"):
+                _json_response(self, 400, {"ok": False, "error": "prompt required"})
+                return
+            prompt = str(body["prompt"])
+            session_id = body.get("session_id")
+            model = body.get("model")
+            provider = body.get("provider")
+            reasoning = body.get("reasoning_effort")
+            res = _run_hermes_cli_prompt(
+                prompt,
+                session_id=session_id,
+                model=model,
+                provider=provider,
+                reasoning=reasoning,
+            )
+            _json_response(self, 200, res)
             return
 
         _json_response(self, 404, {"ok": False, "error": "not found"})
