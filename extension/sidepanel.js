@@ -31,6 +31,7 @@ const el = {
   currentSessionId: document.getElementById("current-session-id"),
   btnNewSession: document.getElementById("btn-new-session"),
   chatStream: document.getElementById("chat-stream"),
+  btnScrollBottom: document.getElementById("btn-scroll-bottom"),
   chatEmpty: document.getElementById("chat-empty"),
   chatForm: document.getElementById("chat-form"),
   chatInput: document.getElementById("chat-input"),
@@ -105,6 +106,39 @@ function escapeHtml(str) {
 function formatTime(timestamp) {
   const d = new Date(timestamp);
   return d.toTimeString().split(" ")[0];
+}
+
+// Smart Auto-Scroll State
+let userIsScrollingUp = false;
+
+function scrollChatToBottom(force = false) {
+  if (!el.chatStream) return;
+  if (force || !userIsScrollingUp) {
+    el.chatStream.scrollTop = el.chatStream.scrollHeight;
+  }
+}
+
+// Live Thinking Timer
+let thinkingTimerInterval = null;
+let promptStartTime = 0;
+
+function startThinkingTimer(timerEl) {
+  if (thinkingTimerInterval) clearInterval(thinkingTimerInterval);
+  promptStartTime = Date.now();
+  if (timerEl) timerEl.textContent = "0.0s";
+  thinkingTimerInterval = setInterval(() => {
+    if (!timerEl) return;
+    const elapsed = ((Date.now() - promptStartTime) / 1000).toFixed(1);
+    timerEl.textContent = `${elapsed}s`;
+  }, 100);
+}
+
+function stopThinkingTimer() {
+  if (thinkingTimerInterval) {
+    clearInterval(thinkingTimerInterval);
+    thinkingTimerInterval = null;
+  }
+  return promptStartTime > 0 ? ((Date.now() - promptStartTime) / 1000).toFixed(1) : "0.0";
 }
 
 // --------------------------------------------------------------------------
@@ -475,7 +509,7 @@ function ensureAssistantBubble() {
   activeAssistantBubble.appendChild(contentDiv);
 
   el.chatStream.appendChild(activeAssistantBubble);
-  el.chatStream.scrollTop = el.chatStream.scrollHeight;
+  scrollChatToBottom(true);
 }
 
 function appendThinkingContent(text) {
@@ -487,19 +521,24 @@ function appendThinkingContent(text) {
     activeThinkingElement.open = true;
     activeThinkingElement.innerHTML = `
       <summary class="thinking-summary">
-        <span class="thinking-dot"></span>
-        <span>Thinking...</span>
+        <div class="thinking-summary-left">
+          <span class="thinking-dot"></span>
+          <span class="thinking-title">Hermes is thinking...</span>
+        </div>
+        <span class="thinking-timer">0.0s</span>
       </summary>
       <div class="thinking-content"></div>
     `;
     activeAssistantBubble.insertBefore(activeThinkingElement, activeAssistantBubble.firstChild);
+    const timerSpan = activeThinkingElement.querySelector(".thinking-timer");
+    startThinkingTimer(timerSpan);
   }
 
   const content = activeThinkingElement.querySelector(".thinking-content");
   if (content) {
     content.textContent += text;
   }
-  el.chatStream.scrollTop = el.chatStream.scrollHeight;
+  scrollChatToBottom();
 }
 
 function appendAssistantContent(text) {
@@ -508,15 +547,55 @@ function appendAssistantContent(text) {
   if (textDiv) {
     textDiv.textContent += text;
   }
-  el.chatStream.scrollTop = el.chatStream.scrollHeight;
+  scrollChatToBottom();
 }
 
-function finalizeAssistantBubble() {
+function finalizeAssistantBubble(modelName = null) {
+  const elapsedSeconds = stopThinkingTimer();
   if (activeThinkingElement) {
     activeThinkingElement.open = false; // collapse thinking when done
+    const dot = activeThinkingElement.querySelector(".thinking-dot");
+    if (dot) dot.classList.add("done");
+    const title = activeThinkingElement.querySelector(".thinking-title");
+    if (title) title.textContent = `Thought for ${elapsedSeconds}s`;
+    const timer = activeThinkingElement.querySelector(".thinking-timer");
+    if (timer) timer.remove();
   }
+
+  if (activeAssistantBubble) {
+    const textDiv = activeAssistantBubble.querySelector(".bubble-text");
+    if (textDiv && !textDiv.querySelector(".code-block-wrapper")) {
+      const raw = textDiv.textContent || "";
+      if (raw.trim()) {
+        textDiv.innerHTML = renderFormattedMarkdown(raw);
+      }
+    }
+
+    if (!activeAssistantBubble.querySelector(".bubble-action-bar")) {
+      const actionBar = document.createElement("div");
+      actionBar.className = "bubble-action-bar";
+      const modelDisplay = modelName || activeModel || "hermes";
+      actionBar.innerHTML = `
+        <div class="bubble-action-left">
+          <button type="button" class="bubble-action-btn btn-copy-msg" title="Copy response markdown">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <span>Copy</span>
+          </button>
+        </div>
+        <div class="bubble-action-right">
+          <span class="bubble-meta-tag">${elapsedSeconds}s · ${escapeHtml(modelDisplay)}</span>
+        </div>
+      `;
+      activeAssistantBubble.appendChild(actionBar);
+    }
+  }
+
   activeAssistantBubble = null;
   activeThinkingElement = null;
+  scrollChatToBottom();
 }
 
 function handleToolActivityEvent(event, data) {
@@ -542,22 +621,146 @@ function appendUserBubble(text) {
   el.chatStream.scrollTop = el.chatStream.scrollHeight;
 }
 
+// --------------------------------------------------------------------------
+// Progressive Typing Streaming Engine (Natural Cadence)
+// --------------------------------------------------------------------------
+let activeStreamAbortFn = null;
+
+async function streamTextToBubble(textDiv, fullMarkdown) {
+  if (!textDiv || !fullMarkdown) {
+    if (textDiv) textDiv.innerHTML = renderFormattedMarkdown(fullMarkdown || "");
+    return;
+  }
+
+  if (activeStreamAbortFn) {
+    activeStreamAbortFn();
+    activeStreamAbortFn = null;
+  }
+
+  let isSkipped = false;
+  let resolvePromise = null;
+
+  const promise = new Promise((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  const skipHandler = () => {
+    isSkipped = true;
+  };
+
+  const bubble = textDiv.closest(".chat-bubble");
+  if (bubble) {
+    bubble.addEventListener("click", skipHandler, { once: true });
+    bubble.style.cursor = "pointer";
+    bubble.title = "Click to fast-forward streaming";
+  }
+
+  activeStreamAbortFn = () => {
+    isSkipped = true;
+    if (resolvePromise) resolvePromise();
+  };
+
+  const len = fullMarkdown.length;
+  let idx = 0;
+  let accumulated = "";
+  let inCodeBlock = false;
+
+  const cjkRegex = /[\u4e00-\u9fa5\u3040-\u30ff\uff00-\uffef]/;
+  const punctRegex = /[。？！，、；：\n.?!,;:]/;
+
+  while (idx < len) {
+    if (isSkipped) {
+      break;
+    }
+
+    if (fullMarkdown.slice(idx, idx + 3) === "```") {
+      inCodeBlock = !inCodeBlock;
+    }
+
+    let take = 1;
+    if (inCodeBlock) {
+      take = Math.min(8, len - idx);
+    } else {
+      const char = fullMarkdown[idx];
+      if (cjkRegex.test(char)) {
+        take = 1;
+      } else {
+        let j = idx + 1;
+        while (
+          j < len &&
+          j - idx < 5 &&
+          !cjkRegex.test(fullMarkdown[j]) &&
+          fullMarkdown[j] !== " " &&
+          !punctRegex.test(fullMarkdown[j])
+        ) {
+          j++;
+        }
+        if (j < len && fullMarkdown[j] === " ") j++;
+        take = Math.max(1, j - idx);
+      }
+    }
+
+    const chunk = fullMarkdown.slice(idx, idx + take);
+    idx += take;
+    accumulated += chunk;
+
+    textDiv.innerHTML = renderFormattedMarkdown(accumulated) + '<span class="streaming-cursor">▌</span>';
+    scrollChatToBottom();
+
+    let delay = 14;
+    if (inCodeBlock) {
+      delay = 6;
+    } else if (punctRegex.test(chunk)) {
+      delay = 40;
+    }
+
+    await new Promise((r) => setTimeout(r, delay));
+  }
+
+  if (bubble) {
+    bubble.removeEventListener("click", skipHandler);
+    bubble.style.cursor = "";
+    bubble.removeAttribute("title");
+  }
+  activeStreamAbortFn = null;
+  textDiv.innerHTML = renderFormattedMarkdown(fullMarkdown);
+  scrollChatToBottom();
+  if (resolvePromise) resolvePromise();
+  return promise;
+}
+
 // Direct Prompt via Companion Bridge (Hermes CLI fallback)
 async function sendPromptViaBridge(promptPayload) {
   if (isPromptRunning) return;
   isPromptRunning = true;
   if (el.btnSendChat) el.btnSendChat.disabled = true;
+  if (el.chatInput) el.chatInput.disabled = true;
 
   ensureAssistantBubble();
   const textDiv = activeAssistantBubble?.querySelector(".bubble-text");
-  if (textDiv) {
-    textDiv.innerHTML = `
-      <div class="thinking-summary" style="padding: 2px 0; color: var(--text-secondary); cursor: default;">
+
+  // Create thinking block with live timer
+  const thinkingDetails = document.createElement("details");
+  thinkingDetails.className = "thinking-block";
+  thinkingDetails.open = true;
+  const modelLabel = promptPayload.model || activeModel || "Hermes";
+  const effortLabel = EFFORT_LABELS[promptPayload.reasoning_effort || activeEffort] || "High";
+  thinkingDetails.innerHTML = `
+    <summary class="thinking-summary">
+      <div class="thinking-summary-left">
         <span class="thinking-dot"></span>
-        <span>Hermes is thinking...</span>
+        <span class="thinking-title">Hermes is thinking...</span>
       </div>
-    `;
-  }
+      <span class="thinking-timer">0.0s</span>
+    </summary>
+    <div class="thinking-content">Dispatching to ${escapeHtml(modelLabel)} (effort: ${escapeHtml(effortLabel)})...</div>
+  `;
+  activeAssistantBubble.insertBefore(thinkingDetails, activeAssistantBubble.firstChild);
+  activeThinkingElement = thinkingDetails;
+
+  const timerSpan = thinkingDetails.querySelector(".thinking-timer");
+  startThinkingTimer(timerSpan);
+  scrollChatToBottom(true);
 
   try {
     const { headers, bridgeUrl } = await getBridgeAuthHeaders();
@@ -567,29 +770,66 @@ async function sendPromptViaBridge(promptPayload) {
       body: JSON.stringify(promptPayload),
     });
 
+    const elapsedSeconds = stopThinkingTimer();
+
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       const errMsg = errData.error || `Companion Bridge returned HTTP ${res.status}`;
       if (textDiv) {
-        textDiv.innerHTML = `<span style="color:var(--color-danger);">${escapeHtml(errMsg)}</span>`;
+        textDiv.innerHTML = `
+          <div class="chat-error-card">
+            <div class="chat-error-header">Execution Failed (${elapsedSeconds}s)</div>
+            <div class="chat-error-body">${escapeHtml(errMsg)}</div>
+            <button type="button" class="btn-retry-prompt" data-prompt="${escapeHtml(promptPayload.prompt)}">
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="1 4 1 10 7 10"></polyline>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+              </svg>
+              <span>Retry</span>
+            </button>
+          </div>
+        `;
       }
-      finalizeAssistantBubble();
+      finalizeAssistantBubble(promptPayload.model);
       return;
     }
 
     const data = await res.json();
     if (!data.ok) {
+      const errMsg = data.error || "Failed to execute Hermes command.";
       if (textDiv) {
-        textDiv.innerHTML = `<span style="color:var(--color-danger);">${escapeHtml(data.error || "Failed to execute Hermes command.")}</span>`;
+        textDiv.innerHTML = `
+          <div class="chat-error-card">
+            <div class="chat-error-header">Hermes Error (${elapsedSeconds}s)</div>
+            <div class="chat-error-body">${escapeHtml(errMsg)}</div>
+            <button type="button" class="btn-retry-prompt" data-prompt="${escapeHtml(promptPayload.prompt)}">
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="1 4 1 10 7 10"></polyline>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+              </svg>
+              <span>Retry</span>
+            </button>
+          </div>
+        `;
       }
-      finalizeAssistantBubble();
+      finalizeAssistantBubble(promptPayload.model);
       return;
     }
 
-    if (textDiv) {
-      textDiv.innerHTML = renderFormattedMarkdown(data.response || "(No output returned)");
+    // Collapse thinking details before streaming answer
+    if (activeThinkingElement) {
+      activeThinkingElement.open = false;
+      const dot = activeThinkingElement.querySelector(".thinking-dot");
+      if (dot) dot.classList.add("done");
+      const title = activeThinkingElement.querySelector(".thinking-title");
+      if (title) title.textContent = `Thought for ${elapsedSeconds}s`;
+      const timer = activeThinkingElement.querySelector(".thinking-timer");
+      if (timer) timer.remove();
     }
-    finalizeAssistantBubble();
+
+    // Smooth Progressive Streaming animation to bubble
+    await streamTextToBubble(textDiv, data.response || "(No output returned)");
+    finalizeAssistantBubble(promptPayload.model);
 
     // Resync SQLite database to fetch updated session and message history
     setTimeout(async () => {
@@ -606,16 +846,30 @@ async function sendPromptViaBridge(promptPayload) {
       }
     }, 600);
   } catch (err) {
+    const elapsedSeconds = stopThinkingTimer();
     if (textDiv) {
       textDiv.innerHTML = `
-        <span style="color:var(--color-danger);">Bridge error: ${escapeHtml(err.message || String(err))}</span><br/>
-        <small style="color:var(--text-secondary);">Companion Bridge (127.0.0.1:19876) could not be reached.</small>
+        <div class="chat-error-card">
+          <div class="chat-error-header">Bridge Error (${elapsedSeconds}s)</div>
+          <div class="chat-error-body">Could not reach Companion Bridge at 127.0.0.1:19876. (${escapeHtml(err.message || String(err))})</div>
+          <button type="button" class="btn-retry-prompt" data-prompt="${escapeHtml(promptPayload.prompt)}">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="1 4 1 10 7 10"></polyline>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+            </svg>
+            <span>Retry</span>
+          </button>
+        </div>
       `;
     }
-    finalizeAssistantBubble();
+    finalizeAssistantBubble(promptPayload.model);
   } finally {
     isPromptRunning = false;
     if (el.btnSendChat) el.btnSendChat.disabled = false;
+    if (el.chatInput) {
+      el.chatInput.disabled = false;
+      el.chatInput.focus();
+    }
   }
 }
 
@@ -673,7 +927,7 @@ el.chatInput.addEventListener("keydown", (e) => {
 });
 
 // --------------------------------------------------------------------------
-// Safe Markdown Formatter
+// Safe Markdown Formatter with Code Block Headers & Copy
 // --------------------------------------------------------------------------
 function renderFormattedMarkdown(text) {
   if (!text) return "";
@@ -681,7 +935,9 @@ function renderFormattedMarkdown(text) {
 
   // Fenced code blocks ```lang\n...```
   escaped = escaped.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (match, lang, code) => {
-    return `<pre><code>${code.trim()}</code></pre>`;
+    const cleanLang = (lang || "").trim();
+    const displayLang = cleanLang ? escapeHtml(cleanLang) : "code";
+    return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${displayLang}</span><button type="button" class="btn-code-copy" title="Copy code"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><span>Copy</span></button></div><pre><code class="code-content">${code.trim()}</code></pre></div>`;
   });
 
   // Inline code `...`
@@ -699,6 +955,7 @@ function renderFormattedMarkdown(text) {
     .map((p) => {
       const trimmed = p.trim();
       if (!trimmed) return "";
+      if (trimmed.startsWith('<div class="code-block-wrapper">')) return trimmed;
       if (trimmed.startsWith("<pre>")) return trimmed;
       return `<p>${trimmed.replace(/\n/g, "<br/>")}</p>`;
     })
@@ -894,8 +1151,10 @@ function renderSessionMessages(sessionInfo, messages) {
         thinkingDetails.className = "thinking-block";
         thinkingDetails.innerHTML = `
           <summary class="thinking-summary">
-            <span class="thinking-dot"></span>
-            <span>Thinking Process</span>
+            <div class="thinking-summary-left">
+              <span class="thinking-dot done"></span>
+              <span>Thinking Process</span>
+            </div>
           </summary>
           <div class="thinking-content">${escapeHtml(msg.reasoning)}</div>
         `;
@@ -938,6 +1197,27 @@ function renderSessionMessages(sessionInfo, messages) {
 
       // Only append if it has at least reasoning, tool calls, or content
       if (bubble.hasChildNodes()) {
+        const actionBar = document.createElement("div");
+        actionBar.className = "bubble-action-bar";
+        const timeLabel = msg.timestamp ? formatTime(msg.timestamp * 1000) : "";
+        const metaText = timeLabel
+          ? `${timeLabel} · ${sessionInfo?.model || activeModel || "hermes"}`
+          : (sessionInfo?.model || activeModel || "hermes");
+        actionBar.innerHTML = `
+          <div class="bubble-action-left">
+            <button type="button" class="bubble-action-btn btn-copy-msg" title="Copy response markdown">
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <div class="bubble-action-right">
+            <span class="bubble-meta-tag">${escapeHtml(metaText)}</span>
+          </div>
+        `;
+        bubble.appendChild(actionBar);
         el.chatStream.appendChild(bubble);
       }
     } else if (role === "tool") {
@@ -1096,6 +1376,80 @@ el.btnQuickCapture.addEventListener("click", async () => {
   el.chatInput.value = `Inspect the active page "${ctx.title}" at ${ctx.url} and describe its layout and actions.`;
   el.chatForm.dispatchEvent(new Event("submit"));
 });
+
+// --------------------------------------------------------------------------
+// Chat Stream Interactions: Copy Code, Copy Message, Retry Prompt
+// --------------------------------------------------------------------------
+if (el.chatStream) {
+  el.chatStream.addEventListener("click", async (e) => {
+    // 1. Copy Code Block
+    const btnCopyCode = e.target.closest(".btn-code-copy");
+    if (btnCopyCode) {
+      const wrapper = btnCopyCode.closest(".code-block-wrapper");
+      const codeEl = wrapper?.querySelector(".code-content");
+      if (codeEl) {
+        await navigator.clipboard.writeText(codeEl.textContent || "");
+        const label = btnCopyCode.querySelector("span");
+        if (label) label.textContent = "Copied!";
+        btnCopyCode.classList.add("copied");
+        setTimeout(() => {
+          if (label) label.textContent = "Copy";
+          btnCopyCode.classList.remove("copied");
+        }, 1500);
+      }
+      return;
+    }
+
+    // 2. Copy Whole Message
+    const btnCopyMsg = e.target.closest(".btn-copy-msg");
+    if (btnCopyMsg) {
+      const bubble = btnCopyMsg.closest(".chat-bubble.assistant");
+      const textEl = bubble?.querySelector(".bubble-text");
+      if (textEl) {
+        await navigator.clipboard.writeText(textEl.innerText || textEl.textContent || "");
+        const label = btnCopyMsg.querySelector("span");
+        if (label) label.textContent = "Copied!";
+        btnCopyMsg.classList.add("copied");
+        setTimeout(() => {
+          if (label) label.textContent = "Copy";
+          btnCopyMsg.classList.remove("copied");
+        }, 1500);
+      }
+      return;
+    }
+
+    // 3. Retry Prompt
+    const btnRetry = e.target.closest(".btn-retry-prompt");
+    if (btnRetry) {
+      const prompt = btnRetry.getAttribute("data-prompt");
+      if (prompt && el.chatInput) {
+        el.chatInput.value = prompt;
+        el.chatForm.dispatchEvent(new Event("submit"));
+      }
+      return;
+    }
+  });
+
+  // Smart Auto-Scroll detection
+  el.chatStream.addEventListener("scroll", () => {
+    const distanceFromBottom = el.chatStream.scrollHeight - el.chatStream.scrollTop - el.chatStream.clientHeight;
+    if (distanceFromBottom > 70) {
+      userIsScrollingUp = true;
+      if (el.btnScrollBottom) el.btnScrollBottom.classList.remove("hidden");
+    } else {
+      userIsScrollingUp = false;
+      if (el.btnScrollBottom) el.btnScrollBottom.classList.add("hidden");
+    }
+  });
+}
+
+if (el.btnScrollBottom) {
+  el.btnScrollBottom.addEventListener("click", () => {
+    userIsScrollingUp = false;
+    el.btnScrollBottom.classList.add("hidden");
+    el.chatStream.scrollTo({ top: el.chatStream.scrollHeight, behavior: "smooth" });
+  });
+}
 
 // --------------------------------------------------------------------------
 // Workspace Tab Group Management

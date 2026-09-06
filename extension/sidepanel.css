@@ -625,13 +625,27 @@ body {
 .thinking-summary {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
-  padding: 5px 9px;
+  padding: 6px 10px;
   font-size: 11px;
   font-weight: 500;
   color: #82abfe;
   cursor: pointer;
   user-select: none;
+}
+
+.thinking-summary-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thinking-timer {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
 }
 
 .thinking-dot {
@@ -643,6 +657,12 @@ body {
   animation: pulse 1.5s infinite;
 }
 
+.thinking-dot.done {
+  background-color: #34d399;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.4);
+  animation: none;
+}
+
 .thinking-content {
   padding: 8px 10px;
   font-size: 11px;
@@ -652,6 +672,8 @@ body {
   font-family: var(--font-mono);
   background-color: rgba(0, 0, 0, 0.25);
   line-height: 1.5;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 /* Tool activity strip */
@@ -722,6 +744,65 @@ body {
   font-family: var(--font-mono);
 }
 
+/* Code Block Wrapper with Header & Copy Button */
+.code-block-wrapper {
+  margin: 8px 0;
+  background-color: #0b0f19;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background-color: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.code-block-lang {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.btn-code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: all 0.15s ease;
+}
+
+.btn-code-copy:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.btn-code-copy.copied {
+  color: #34d399;
+}
+
+.code-block-wrapper pre {
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 8px 10px !important;
+}
+
 /* Chat bubble rich text formatting */
 .chat-bubble pre {
   background-color: var(--bg-primary);
@@ -758,6 +839,156 @@ body {
 .chat-bubble a {
   color: #82abfe;
   text-decoration: underline;
+}
+
+/* Real-time Streaming Cursor */
+.streaming-cursor {
+  display: inline-block;
+  color: #82abfe;
+  font-weight: 700;
+  font-size: 13px;
+  margin-left: 2px;
+  line-height: 1;
+  animation: cursorPulse 0.8s infinite ease-in-out;
+  user-select: none;
+  pointer-events: none;
+  vertical-align: baseline;
+}
+
+@keyframes cursorPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.15;
+    transform: scale(0.95);
+  }
+}
+
+/* Bubble Bottom Action Bar */
+.bubble-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  opacity: 0.65;
+  transition: opacity 0.15s ease;
+}
+
+.chat-bubble.assistant:hover .bubble-action-bar {
+  opacity: 1;
+}
+
+.bubble-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: all 0.15s ease;
+}
+
+.bubble-action-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.bubble-action-btn.copied {
+  color: #34d399;
+}
+
+.bubble-meta-tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+/* Inline Error Card */
+.chat-error-card {
+  margin: 6px 0;
+  padding: 8px 12px;
+  background-color: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+.chat-error-header {
+  font-weight: 600;
+  color: #f87171;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.chat-error-body {
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+.btn-retry-prompt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background-color: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-retry-prompt:hover {
+  background-color: rgba(239, 68, 68, 0.25);
+  color: #fff;
+  border-color: #f87171;
+}
+
+/* Floating Jump to Bottom Button */
+#pane-chat {
+  position: relative;
+}
+
+.scroll-bottom-btn {
+  position: absolute;
+  bottom: 120px;
+  right: 18px;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  color: #82abfe;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.scroll-bottom-btn:hover {
+  background-color: var(--bg-hover);
+  border-color: #82abfe;
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.scroll-bottom-btn.hidden {
+  display: none !important;
 }
 
 /* Chat Composer Area — Hermes Floating Glass Box */
