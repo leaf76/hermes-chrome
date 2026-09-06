@@ -644,15 +644,16 @@ async function streamTextToBubble(textDiv, fullMarkdown) {
     resolvePromise = resolve;
   });
 
-  const skipHandler = () => {
+  const skipHandler = (e) => {
+    if (e.target.closest("button") || e.target.closest("a")) return;
     isSkipped = true;
   };
 
   const bubble = textDiv.closest(".chat-bubble");
   if (bubble) {
-    bubble.addEventListener("click", skipHandler, { once: true });
+    bubble.addEventListener("click", skipHandler);
     bubble.style.cursor = "pointer";
-    bubble.title = "Click to fast-forward streaming";
+    bubble.title = "Click to instantly show full response";
   }
 
   activeStreamAbortFn = () => {
@@ -661,60 +662,42 @@ async function streamTextToBubble(textDiv, fullMarkdown) {
   };
 
   const len = fullMarkdown.length;
+  // Adaptive duration: target between 300ms (short) and 1500ms (long) for silky responsiveness
+  const targetDurationMs = Math.min(1500, Math.max(300, Math.round(len * 1.5)));
+  const tickIntervalMs = 20;
+  const totalTicks = Math.max(1, Math.round(targetDurationMs / tickIntervalMs));
+  const charsPerTick = Math.max(1, Math.ceil(len / totalTicks));
+
   let idx = 0;
   let accumulated = "";
-  let inCodeBlock = false;
-
-  const cjkRegex = /[\u4e00-\u9fa5\u3040-\u30ff\uff00-\uffef]/;
-  const punctRegex = /[。？！，、；：\n.?!,;:]/;
+  let lastScrollTime = 0;
 
   while (idx < len) {
     if (isSkipped) {
       break;
     }
 
-    if (fullMarkdown.slice(idx, idx + 3) === "```") {
-      inCodeBlock = !inCodeBlock;
+    let take = charsPerTick;
+    // Inside code blocks, advance in slightly larger chunks for speed
+    if (fullMarkdown.slice(idx, idx + 3) === "```" || (accumulated.match(/```/g) || []).length % 2 === 1) {
+      take = Math.max(take, 12);
     }
 
-    let take = 1;
-    if (inCodeBlock) {
-      take = Math.min(8, len - idx);
-    } else {
-      const char = fullMarkdown[idx];
-      if (cjkRegex.test(char)) {
-        take = 1;
-      } else {
-        let j = idx + 1;
-        while (
-          j < len &&
-          j - idx < 5 &&
-          !cjkRegex.test(fullMarkdown[j]) &&
-          fullMarkdown[j] !== " " &&
-          !punctRegex.test(fullMarkdown[j])
-        ) {
-          j++;
-        }
-        if (j < len && fullMarkdown[j] === " ") j++;
-        take = Math.max(1, j - idx);
-      }
-    }
-
+    take = Math.min(take, len - idx);
     const chunk = fullMarkdown.slice(idx, idx + take);
     idx += take;
     accumulated += chunk;
 
     textDiv.innerHTML = renderFormattedMarkdown(accumulated) + '<span class="streaming-cursor">▌</span>';
-    scrollChatToBottom();
 
-    let delay = 14;
-    if (inCodeBlock) {
-      delay = 6;
-    } else if (punctRegex.test(chunk)) {
-      delay = 40;
+    // Throttle scroll checks to 50ms to prevent forced synchronous layout thrashing
+    const now = performance.now();
+    if (now - lastScrollTime > 50) {
+      scrollChatToBottom();
+      lastScrollTime = now;
     }
 
-    await new Promise((r) => setTimeout(r, delay));
+    await new Promise((r) => setTimeout(r, tickIntervalMs));
   }
 
   if (bubble) {
@@ -831,20 +814,24 @@ async function sendPromptViaBridge(promptPayload) {
     await streamTextToBubble(textDiv, data.response || "(No output returned)");
     finalizeAssistantBubble(promptPayload.model);
 
-    // Resync SQLite database to fetch updated session and message history
+    // Resync SQLite database to update session list without wiping live chat DOM
     setTimeout(async () => {
-      await fetchHermesSessions(true);
-      const selVal = el.chatSessionSelect?.value;
-      if (selVal && selVal !== "__auto__" && selVal !== "__new__") {
-        await loadHermesSession(selVal);
-      } else if (hermesSessionsCache.length > 0) {
-        const latest = hermesSessionsCache[0];
-        if (el.chatSessionSelect && el.chatSessionSelect.value !== "__auto__") {
-          el.chatSessionSelect.value = latest.id;
+      try {
+        const sessions = await fetchHermesSessions(true);
+        if (sessions && sessions.length > 0) {
+          const latest = sessions[0];
+          if (latest && latest.id) {
+            currentSessionId = latest.id;
+            currentFollowedSessionId = latest.id;
+            if (el.chatSessionSelect && el.chatSessionSelect.value !== "__auto__") {
+              el.chatSessionSelect.value = latest.id;
+            }
+          }
         }
-        await loadHermesSession(latest.id);
+      } catch {
+        /* ignore background sync errors */
       }
-    }, 600);
+    }, 1000);
   } catch (err) {
     const elapsedSeconds = stopThinkingTimer();
     if (textDiv) {
@@ -932,6 +919,18 @@ el.chatInput.addEventListener("keydown", (e) => {
 function renderFormattedMarkdown(text) {
   if (!text) return "";
   let escaped = escapeHtml(text);
+
+  // Auto-close unclosed code blocks during streaming to render syntax box immediately
+  const backtickFences = (escaped.match(/```/g) || []).length;
+  if (backtickFences % 2 === 1) {
+    escaped += "\n```";
+  }
+
+  // Auto-close unclosed bold during streaming
+  const doubleStars = (escaped.match(/\*\*/g) || []).length;
+  if (doubleStars % 2 === 1) {
+    escaped += "**";
+  }
 
   // Fenced code blocks ```lang\n...```
   escaped = escaped.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (match, lang, code) => {
