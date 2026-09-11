@@ -622,7 +622,8 @@ function appendUserBubble(text) {
 }
 
 // --------------------------------------------------------------------------
-// Progressive Typing Streaming Engine (Natural Cadence)
+// --------------------------------------------------------------------------
+// Progressive Typing Streaming Engine (RAF-driven VSync Cadence)
 // --------------------------------------------------------------------------
 let activeStreamAbortFn = null;
 
@@ -638,78 +639,84 @@ async function streamTextToBubble(textDiv, fullMarkdown) {
   }
 
   let isSkipped = false;
-  let resolvePromise = null;
+  let rafId = null;
 
-  const promise = new Promise((resolve) => {
-    resolvePromise = resolve;
-  });
-
+  const bubble = textDiv.closest(".chat-bubble");
   const skipHandler = (e) => {
     if (e.target.closest("button") || e.target.closest("a")) return;
     isSkipped = true;
   };
 
-  const bubble = textDiv.closest(".chat-bubble");
   if (bubble) {
     bubble.addEventListener("click", skipHandler);
     bubble.style.cursor = "pointer";
     bubble.title = "Click to instantly show full response";
   }
 
-  activeStreamAbortFn = () => {
-    isSkipped = true;
-    if (resolvePromise) resolvePromise();
+  const cleanup = () => {
+    if (rafId) cancelAnimationFrame(rafId);
+    if (bubble) {
+      bubble.removeEventListener("click", skipHandler);
+      bubble.style.cursor = "";
+      bubble.removeAttribute("title");
+    }
+    activeStreamAbortFn = null;
   };
 
-  const len = fullMarkdown.length;
-  // Adaptive duration: target between 300ms (short) and 1500ms (long) for silky responsiveness
-  const targetDurationMs = Math.min(1500, Math.max(300, Math.round(len * 1.5)));
-  const tickIntervalMs = 20;
-  const totalTicks = Math.max(1, Math.round(targetDurationMs / tickIntervalMs));
-  const charsPerTick = Math.max(1, Math.ceil(len / totalTicks));
-
-  let idx = 0;
-  let accumulated = "";
-  let lastScrollTime = 0;
-
-  while (idx < len) {
-    if (isSkipped) {
-      break;
-    }
-
-    let take = charsPerTick;
-    // Inside code blocks, advance in slightly larger chunks for speed
-    if (fullMarkdown.slice(idx, idx + 3) === "```" || (accumulated.match(/```/g) || []).length % 2 === 1) {
-      take = Math.max(take, 12);
-    }
-
-    take = Math.min(take, len - idx);
-    const chunk = fullMarkdown.slice(idx, idx + take);
-    idx += take;
-    accumulated += chunk;
-
-    textDiv.innerHTML = renderFormattedMarkdown(accumulated) + '<span class="streaming-cursor">▌</span>';
-
-    // Throttle scroll checks to 50ms to prevent forced synchronous layout thrashing
-    const now = performance.now();
-    if (now - lastScrollTime > 50) {
+  return new Promise((resolve) => {
+    activeStreamAbortFn = () => {
+      isSkipped = true;
+      cleanup();
+      textDiv.innerHTML = renderFormattedMarkdown(fullMarkdown);
       scrollChatToBottom();
-      lastScrollTime = now;
-    }
+      resolve();
+    };
 
-    await new Promise((r) => setTimeout(r, tickIntervalMs));
-  }
+    const len = fullMarkdown.length;
+    // Target duration: strictly between 300ms and 1200ms for silky responsiveness
+    const targetDurationMs = Math.min(1200, Math.max(300, Math.round(len * 1.1)));
+    const startTime = performance.now();
+    let lastRenderedIdx = 0;
+    let lastScrollTime = 0;
 
-  if (bubble) {
-    bubble.removeEventListener("click", skipHandler);
-    bubble.style.cursor = "";
-    bubble.removeAttribute("title");
-  }
-  activeStreamAbortFn = null;
-  textDiv.innerHTML = renderFormattedMarkdown(fullMarkdown);
-  scrollChatToBottom();
-  if (resolvePromise) resolvePromise();
-  return promise;
+    const frame = (now) => {
+      if (isSkipped) {
+        cleanup();
+        textDiv.innerHTML = renderFormattedMarkdown(fullMarkdown);
+        scrollChatToBottom();
+        resolve();
+        return;
+      }
+
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / targetDurationMs);
+      // Smooth cubic ease-out curve matching human reading deceleration
+      const easeProgress = 1 - Math.pow(1 - progress, 1.5);
+      const targetIdx = Math.min(len, Math.max(lastRenderedIdx + 1, Math.round(easeProgress * len)));
+
+      if (targetIdx > lastRenderedIdx) {
+        lastRenderedIdx = targetIdx;
+        const accumulated = fullMarkdown.slice(0, targetIdx);
+        textDiv.innerHTML = renderFormattedMarkdown(accumulated) + '<span class="streaming-cursor">▌</span>';
+
+        if (now - lastScrollTime > 50) {
+          scrollChatToBottom();
+          lastScrollTime = now;
+        }
+      }
+
+      if (lastRenderedIdx >= len || progress >= 1) {
+        cleanup();
+        textDiv.innerHTML = renderFormattedMarkdown(fullMarkdown);
+        scrollChatToBottom();
+        resolve();
+      } else {
+        rafId = requestAnimationFrame(frame);
+      }
+    };
+
+    rafId = requestAnimationFrame(frame);
+  });
 }
 
 // Direct Prompt via Companion Bridge (Hermes CLI fallback)
@@ -932,11 +939,16 @@ function renderFormattedMarkdown(text) {
     escaped += "**";
   }
 
-  // Fenced code blocks ```lang\n...```
+  // Fenced code blocks ```lang\n...``` (isolated via placeholders so double newlines don't break paragraphs)
+  const codeBlocks = [];
   escaped = escaped.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (match, lang, code) => {
     const cleanLang = (lang || "").trim();
     const displayLang = cleanLang ? escapeHtml(cleanLang) : "code";
-    return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${displayLang}</span><button type="button" class="btn-code-copy" title="Copy code"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><span>Copy</span></button></div><pre><code class="code-content">${code.trim()}</code></pre></div>`;
+    const idx = codeBlocks.length;
+    codeBlocks.push(
+      `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-block-lang">${displayLang}</span><button type="button" class="btn-code-copy" title="Copy code"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><span>Copy</span></button></div><pre><code class="code-content">${code.trim()}</code></pre></div>`
+    );
+    return `\n\n__CODE_BLOCK_${idx}__\n\n`;
   });
 
   // Inline code `...`
@@ -950,15 +962,22 @@ function renderFormattedMarkdown(text) {
 
   // Paragraphs & line breaks
   const paragraphs = escaped.split(/\n{2,}/);
-  return paragraphs
+  let html = paragraphs
     .map((p) => {
       const trimmed = p.trim();
       if (!trimmed) return "";
-      if (trimmed.startsWith('<div class="code-block-wrapper">')) return trimmed;
+      if (trimmed.startsWith("__CODE_BLOCK_")) return trimmed;
       if (trimmed.startsWith("<pre>")) return trimmed;
       return `<p>${trimmed.replace(/\n/g, "<br/>")}</p>`;
     })
     .join("");
+
+  // Restore protected code blocks
+  html = html.replace(/__CODE_BLOCK_(\d+)__/g, (match, idx) => {
+    return codeBlocks[Number(idx)] || "";
+  });
+
+  return html;
 }
 
 // --------------------------------------------------------------------------
@@ -1240,6 +1259,10 @@ function startSessionAutoSync() {
   if (autoFollowTimer) clearInterval(autoFollowTimer);
 
   autoFollowTimer = setInterval(async () => {
+    if (document.hidden || isPromptRunning) {
+      return;
+    }
+
     const chatPane = document.getElementById("pane-chat");
     if (!chatPane || !chatPane.classList.contains("active")) {
       return;
@@ -1429,17 +1452,27 @@ if (el.chatStream) {
     }
   });
 
-  // Smart Auto-Scroll detection
-  el.chatStream.addEventListener("scroll", () => {
-    const distanceFromBottom = el.chatStream.scrollHeight - el.chatStream.scrollTop - el.chatStream.clientHeight;
-    if (distanceFromBottom > 70) {
-      userIsScrollingUp = true;
-      if (el.btnScrollBottom) el.btnScrollBottom.classList.remove("hidden");
-    } else {
-      userIsScrollingUp = false;
-      if (el.btnScrollBottom) el.btnScrollBottom.classList.add("hidden");
-    }
-  });
+  // Smart Auto-Scroll detection (RAF-throttled & passive for 60/120fps scrolling)
+  let scrollCheckRaf = null;
+  el.chatStream.addEventListener(
+    "scroll",
+    () => {
+      if (scrollCheckRaf) return;
+      scrollCheckRaf = requestAnimationFrame(() => {
+        scrollCheckRaf = null;
+        const distanceFromBottom =
+          el.chatStream.scrollHeight - el.chatStream.scrollTop - el.chatStream.clientHeight;
+        if (distanceFromBottom > 70) {
+          userIsScrollingUp = true;
+          if (el.btnScrollBottom) el.btnScrollBottom.classList.remove("hidden");
+        } else {
+          userIsScrollingUp = false;
+          if (el.btnScrollBottom) el.btnScrollBottom.classList.add("hidden");
+        }
+      });
+    },
+    { passive: true }
+  );
 }
 
 if (el.btnScrollBottom) {

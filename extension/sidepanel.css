@@ -584,6 +584,8 @@ body {
   flex-direction: column;
   gap: 14px;
   user-select: text;
+  overscroll-behavior: contain;
+  contain: layout;
 }
 
 .chat-bubble {
@@ -593,6 +595,7 @@ body {
   font-size: 13px;
   line-height: 1.55;
   word-break: break-word;
+  contain: layout style;
 }
 
 .chat-bubble.user {
@@ -853,6 +856,7 @@ body {
   user-select: none;
   pointer-events: none;
   vertical-align: baseline;
+  will-change: opacity, transform;
 }
 
 @keyframes cursorPulse {
