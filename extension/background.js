@@ -21,6 +21,9 @@ const NATIVE_HOST_NAME = "com.leaf76.hermes_chrome";
 const GROUP_TITLE = "Hermes";
 const GROUP_COLOR = "blue";
 const GROUP_KEY = "hermesChromeGroupId";
+const AGENT_WINDOW_KEY = "hermesChromeAgentWindowId";
+const DEFAULT_AGENT_WINDOW_WIDTH = 1280;
+const DEFAULT_AGENT_WINDOW_HEIGHT = 840;
 const SETTINGS_KEY = "settings";
 const LAST_ACTIVITY_KEY = "lastActivity";
 let polling = false;
@@ -189,6 +192,33 @@ async function setStoredGroupId(id) {
   else await chrome.storage.session.set({ [GROUP_KEY]: id });
 }
 
+async function getStoredAgentWindowId() {
+  const r = await chrome.storage.session.get(AGENT_WINDOW_KEY);
+  return r[AGENT_WINDOW_KEY] ?? null;
+}
+
+async function setStoredAgentWindowId(id) {
+  if (id == null) await chrome.storage.session.remove(AGENT_WINDOW_KEY);
+  else await chrome.storage.session.set({ [AGENT_WINDOW_KEY]: id });
+}
+
+async function windowStillExists(windowId) {
+  if (windowId == null) return false;
+  try {
+    await chrome.windows.get(windowId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isDedicatedAgentWindow(windowId, groupId) {
+  if (!(await windowStillExists(windowId))) return false;
+  const winTabs = await chrome.tabs.query({ windowId });
+  if (winTabs.length === 0) return true;
+  return winTabs.every((t) => t.groupId === groupId);
+}
+
 async function groupStillExists(groupId) {
   if (groupId == null) return false;
   try {
@@ -217,43 +247,176 @@ async function styleGroup(groupId) {
   }
 }
 
-async function ensureGroup(url) {
+function clampWindowSize(width, height) {
+  const w = Number.isFinite(Number(width))
+    ? Math.max(480, Math.min(3840, Math.round(Number(width))))
+    : DEFAULT_AGENT_WINDOW_WIDTH;
+  const h = Number.isFinite(Number(height))
+    ? Math.max(360, Math.min(2160, Math.round(Number(height))))
+    : DEFAULT_AGENT_WINDOW_HEIGHT;
+  return { width: w, height: h };
+}
+
+async function ensureGroup(
+  url,
+  { separateWindow = false, width, height, updateExisting = true } = {}
+) {
+  const startUrl = url ? assertHttpUrl(url) : "chrome://newtab/";
   let groupId = await getStoredGroupId();
-  if (await groupStillExists(groupId)) {
-    if (url) {
-      const safeUrl = assertHttpUrl(url);
-      const tabs = await tabsInGroup(groupId);
-      if (tabs.length > 0) {
-        await chrome.tabs.update(tabs[0].id, { url: safeUrl, active: false });
-      } else {
-        const tab = await chrome.tabs.create({ url: safeUrl, active: false });
+  let agentWinId = await getStoredAgentWindowId();
+
+  if (separateWindow) {
+    if (
+      (await groupStillExists(groupId)) &&
+      (await isDedicatedAgentWindow(agentWinId, groupId))
+    ) {
+      const tabs = (await tabsInGroup(groupId)).filter((t) => t.windowId === agentWinId);
+      let tabId = tabs[0]?.id ?? null;
+      if (url && updateExisting) {
+        if (tabs.length > 0) {
+          await chrome.tabs.update(tabs[0].id, { url: startUrl, active: false });
+        } else {
+          const tab = await chrome.tabs.create({
+            windowId: agentWinId,
+            url: startUrl,
+            active: false,
+          });
+          await chrome.tabs.group({ tabIds: [tab.id], groupId });
+          tabId = tab.id;
+        }
+      } else if (tabs.length === 0) {
+        const tab = await chrome.tabs.create({
+          windowId: agentWinId,
+          url: startUrl,
+          active: false,
+        });
         await chrome.tabs.group({ tabIds: [tab.id], groupId });
+        tabId = tab.id;
+      }
+      await styleGroup(groupId);
+      return {
+        groupId,
+        windowId: agentWinId,
+        separateWindow: true,
+        created: false,
+        tabId,
+      };
+    }
+
+    // Create an unfocused dedicated agent window so user's working window stays untouched.
+    const dims = clampWindowSize(width, height);
+    const win = await chrome.windows.create({
+      url: startUrl,
+      focused: false,
+      type: "normal",
+      width: dims.width,
+      height: dims.height,
+    });
+    const firstTab = (win.tabs && win.tabs[0]) || null;
+    if (!firstTab) {
+      throw new Error("failed to create tab in separate agent window");
+    }
+    groupId = await chrome.tabs.group({
+      tabIds: [firstTab.id],
+      createProperties: { windowId: win.id },
+    });
+    await styleGroup(groupId);
+    await setStoredGroupId(groupId);
+    await setStoredAgentWindowId(win.id);
+    return {
+      groupId,
+      windowId: win.id,
+      separateWindow: true,
+      created: true,
+      tabId: firstTab.id,
+    };
+  }
+
+  if (await groupStillExists(groupId)) {
+    const tabs = await tabsInGroup(groupId);
+    let targetWinId = tabs[0]?.windowId ?? null;
+    if (url && updateExisting) {
+      if (tabs.length > 0) {
+        await chrome.tabs.update(tabs[0].id, { url: startUrl, active: false });
+      } else {
+        const createOpts = { url: startUrl, active: false };
+        if (await windowStillExists(agentWinId)) createOpts.windowId = agentWinId;
+        const tab = await chrome.tabs.create(createOpts);
+        await chrome.tabs.group({ tabIds: [tab.id], groupId });
+        targetWinId = tab.windowId;
       }
     }
     await styleGroup(groupId);
-    return { groupId, created: false };
+    return {
+      groupId,
+      windowId: targetWinId,
+      separateWindow: Boolean(agentWinId && targetWinId === agentWinId),
+      created: false,
+      tabId: tabs[0]?.id ?? null,
+    };
   }
 
   // New workspace: allow chrome://newtab only when no URL given.
-  const startUrl = url ? assertHttpUrl(url) : "chrome://newtab/";
+  await setStoredAgentWindowId(null);
   const tab = await chrome.tabs.create({ url: startUrl, active: false });
   groupId = await chrome.tabs.group({ tabIds: [tab.id] });
   await styleGroup(groupId);
   await setStoredGroupId(groupId);
-  return { groupId, created: true, tabId: tab.id };
+  return {
+    groupId,
+    windowId: tab.windowId,
+    separateWindow: false,
+    created: true,
+    tabId: tab.id,
+  };
 }
 
-async function openInGroup(url, { newTab = false } = {}) {
+async function openInGroup(
+  url,
+  { newTab = false, separateWindow = false, width, height } = {}
+) {
   const safeUrl = assertHttpUrl(url);
-  const { groupId } = await ensureGroup(null);
-  const tabs = await tabsInGroup(groupId);
-  if (!newTab && tabs.length > 0) {
-    await chrome.tabs.update(tabs[0].id, { url: safeUrl, active: false });
-    return { groupId, tabId: tabs[0].id, mode: "navigate" };
+  const ensured = await ensureGroup(safeUrl, {
+    separateWindow,
+    width,
+    height,
+    updateExisting: !newTab,
+  });
+  if (ensured.created) {
+    return {
+      groupId: ensured.groupId,
+      windowId: ensured.windowId,
+      separateWindow: ensured.separateWindow,
+      tabId: ensured.tabId,
+      url: safeUrl,
+      mode: ensured.separateWindow ? "new_window" : "new_tab",
+    };
   }
-  const tab = await chrome.tabs.create({ url: safeUrl, active: false });
-  await chrome.tabs.group({ tabIds: [tab.id], groupId });
-  return { groupId, tabId: tab.id, mode: "new_tab" };
+  const tabs = await tabsInGroup(ensured.groupId);
+  if (!newTab && tabs.length > 0) {
+    return {
+      groupId: ensured.groupId,
+      windowId: tabs[0].windowId,
+      separateWindow: ensured.separateWindow,
+      tabId: tabs[0].id,
+      url: safeUrl,
+      mode: "navigate",
+    };
+  }
+  const createOpts = { url: safeUrl, active: false };
+  if (ensured.windowId != null && (await windowStillExists(ensured.windowId))) {
+    createOpts.windowId = ensured.windowId;
+  }
+  const tab = await chrome.tabs.create(createOpts);
+  await chrome.tabs.group({ tabIds: [tab.id], groupId: ensured.groupId });
+  return {
+    groupId: ensured.groupId,
+    windowId: tab.windowId,
+    separateWindow: ensured.separateWindow,
+    tabId: tab.id,
+    url: safeUrl,
+    mode: "new_tab",
+  };
 }
 
 /**
@@ -430,6 +593,7 @@ async function stopGroup({ closeTabs = true } = {}) {
   const exists = await groupStillExists(groupId);
   if (!exists) {
     await setStoredGroupId(null);
+    await setStoredAgentWindowId(null);
     return { stopped: true, closed: 0 };
   }
   const tabs = await tabsInGroup(groupId);
@@ -447,6 +611,7 @@ async function stopGroup({ closeTabs = true } = {}) {
     await chrome.tabs.ungroup(tabs.map((t) => t.id));
   }
   await setStoredGroupId(null);
+  await setStoredAgentWindowId(null);
   return { stopped: true, closed };
 }
 
@@ -943,31 +1108,19 @@ async function navigateTab(cmd) {
     };
   }
 
-  const { groupId } = await ensureGroup(null);
-  const tabs = await tabsInGroup(groupId);
-  if (tabs.length > 0) {
-    const updated = await chrome.tabs.update(tabs[0].id, {
-      url,
-      active: activate,
-    });
-    return {
-      groupId,
-      tabId: updated.id,
-      windowId: updated.windowId,
-      url: updated.pendingUrl || updated.url || url,
-      mode: "navigate",
-      active: !!updated.active,
-    };
-  }
-  const tab = await chrome.tabs.create({ url, active: activate });
-  await chrome.tabs.group({ tabIds: [tab.id], groupId });
+  const ensured = await ensureGroup(url, {
+    separateWindow: cmd.separateWindow === true,
+    width: cmd.width,
+    height: cmd.height,
+  });
   return {
-    groupId,
-    tabId: tab.id,
-    windowId: tab.windowId,
-    url: tab.pendingUrl || tab.url || url,
-    mode: "new_tab",
-    active: !!tab.active,
+    groupId: ensured.groupId,
+    tabId: ensured.tabId,
+    windowId: ensured.windowId,
+    separateWindow: ensured.separateWindow,
+    url,
+    mode: ensured.created && ensured.separateWindow ? "new_window" : "navigate",
+    active: false,
   };
 }
 
@@ -1035,7 +1188,13 @@ async function evalInTab(cmd) {
   });
   const result = (res && res.result) || { ok: false, error: "no_result" };
   if (!result.ok) {
-    throw new Error(result.error || "eval failed");
+    const rawErr = result.error || "eval failed";
+    if (/unsafe-eval|Content Security Policy/i.test(rawErr)) {
+      throw new Error(
+        `${rawErr} (CSP blocks unsafe-eval on this page; use dom_query, click, editor_get, or editor_set instead)`
+      );
+    }
+    throw new Error(rawErr);
   }
   return {
     tabId,
@@ -1044,34 +1203,245 @@ async function evalInTab(cmd) {
   };
 }
 
-/** Click element by CSS selector (active:false — no window focus). */
+/**
+ * Click element by CSS selector and/or visible text/aria-label (CSP-safe static func).
+ * Uses MAIN world execution without touching window focus.
+ */
 async function clickInTab(cmd) {
   const tabId = Number(cmd.tabId);
   if (!Number.isFinite(tabId)) throw new Error("tabId required");
   await assertTabInWorkspace(tabId, cmd);
-  const selector = cmd.selector;
-  if (!selector || typeof selector !== "string") {
-    throw new Error("selector required");
+  const selector = cmd.selector ? String(cmd.selector) : "";
+  const exactText = cmd.text != null && String(cmd.text).trim() !== "" ? String(cmd.text).trim() : "";
+  const textIncludes =
+    cmd.textIncludes != null && String(cmd.textIncludes).trim() !== ""
+      ? String(cmd.textIncludes).trim()
+      : "";
+  if (!selector && !exactText && !textIncludes) {
+    throw new Error("selector, text, or textIncludes required");
   }
+  const index = Math.max(0, Number(cmd.index) || 0);
+  const visibleOnly =
+    cmd.visibleOnly !== undefined ? Boolean(cmd.visibleOnly) : Boolean(exactText || textIncludes);
+  const mouseEvents = cmd.mouseEvents === true;
+  const doScroll = cmd.scroll !== false;
+
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    args: [selector],
-    func: (sel) => {
-      const el = document.querySelector(sel);
-      if (!el) return { ok: false, error: `no element matching ${sel}` };
+    args: [selector, exactText, textIncludes, index, visibleOnly, mouseEvents, doScroll],
+    func: (sel, exact, substr, idx, visOnly, fireMouse, scroll) => {
+      const isVisible = (el) => {
+        if (!el || !el.getBoundingClientRect) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const cs = getComputedStyle(el);
+        return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
+      };
+      const labelsFor = (el) => [
+        el.innerText || "",
+        el.textContent || "",
+        el.getAttribute ? el.getAttribute("aria-label") || "" : "",
+        el.getAttribute ? el.getAttribute("title") || "" : "",
+        el.getAttribute ? el.getAttribute("data-name") || "" : "",
+        typeof el.value === "string" ? el.value : "",
+      ];
+
+      let candidates;
+      if (sel) {
+        candidates = Array.from(document.querySelectorAll(sel));
+      } else {
+        candidates = Array.from(
+          document.querySelectorAll(
+            'button,a,input[type="button"],input[type="submit"],summary,[role="button"],[role="tab"],[role="menuitem"],[data-name],[aria-label],[title]'
+          )
+        );
+      }
+
+      const exactLower = exact ? exact.toLowerCase() : "";
+      const subLower = substr ? substr.toLowerCase() : "";
+
+      const filterList = (list) =>
+        list.filter((el) => {
+          if (visOnly && !isVisible(el)) return false;
+          if (!exactLower && !subLower) return true;
+          const labels = labelsFor(el).map((s) => String(s).replace(/\s+/g, " ").trim().toLowerCase());
+          if (exactLower && !labels.some((s) => s === exactLower)) return false;
+          if (subLower && !labels.some((s) => s.includes(subLower))) return false;
+          return true;
+        });
+
+      let matches = filterList(candidates);
+      if (matches.length === 0 && !sel && (exactLower || subLower)) {
+        // Fallback to any DOM leaf element when custom widgets don't use button roles.
+        const all = Array.from(document.querySelectorAll("*"));
+        matches = filterList(all).filter((el) => {
+          if (!el.children || el.children.length === 0) return true;
+          return !Array.from(el.children).some((c) => filterList([c]).length > 0);
+        });
+      }
+
+      if (matches.length === 0) {
+        const desc = [
+          sel ? `selector=${sel}` : "",
+          exact ? `text=${exact}` : "",
+          substr ? `textIncludes=${substr}` : "",
+        ]
+          .filter(Boolean)
+          .join(", ");
+        return { ok: false, error: `no element matching ${desc}` };
+      }
+
+      const el = matches[Math.min(idx, matches.length - 1)];
+      if (scroll && typeof el.scrollIntoView === "function") {
+        try {
+          el.scrollIntoView({ block: "nearest", inline: "nearest" });
+        } catch {
+          /* ignore */
+        }
+      }
+      if (fireMouse) {
+        for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+          el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        }
+      }
       el.click();
       return {
         ok: true,
         tag: el.tagName,
         id: el.id || null,
-        text: (el.innerText || el.textContent || "").slice(0, 120),
+        ariaLabel: el.getAttribute ? el.getAttribute("aria-label") || null : null,
+        title: el.getAttribute ? el.getAttribute("title") || null : null,
+        text: (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120),
+        matchedCount: matches.length,
       };
     },
   });
   const result = (res && res.result) || { ok: false, error: "no_result" };
   if (!result.ok) throw new Error(result.error || "click failed");
-  return { tabId, selector, ...result };
+  return { tabId, selector: selector || null, ...result };
+}
+
+/**
+ * Inspect visible/matching DOM elements without unsafe-eval (CSP-safe static func).
+ */
+async function domQueryInTab(cmd) {
+  const tabId = Number(cmd.tabId);
+  if (!Number.isFinite(tabId)) throw new Error("tabId required");
+  await assertTabInWorkspace(tabId, cmd);
+
+  const selector = cmd.selector ? String(cmd.selector) : "";
+  const exactText = cmd.text != null && String(cmd.text).trim() !== "" ? String(cmd.text).trim() : "";
+  const textIncludes =
+    cmd.textIncludes != null && String(cmd.textIncludes).trim() !== ""
+      ? String(cmd.textIncludes).trim()
+      : "";
+  const ariaLabel =
+    cmd.ariaLabel != null && String(cmd.ariaLabel).trim() !== "" ? String(cmd.ariaLabel).trim() : "";
+  const visibleOnly = cmd.visibleOnly !== false;
+  const limit = Math.min(100, Math.max(1, Number(cmd.limit) || 25));
+  const textMax = Math.min(2000, Math.max(40, Number(cmd.textMax) || 200));
+
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [selector, exactText, textIncludes, ariaLabel, visibleOnly, limit, textMax],
+    func: (sel, exact, substr, aria, visOnly, cap, txtCap) => {
+      const isVisible = (el) => {
+        if (!el || !el.getBoundingClientRect) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const cs = getComputedStyle(el);
+        return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
+      };
+      const defaultPool =
+        'button,a,input,textarea,select,[role="button"],[role="tab"],[role="menuitem"],[role="textbox"],[data-name],[aria-label],[title],[contenteditable="true"]';
+      let pool = Array.from(document.querySelectorAll(sel || defaultPool));
+
+      const exactLower = exact ? exact.toLowerCase() : "";
+      const subLower = substr ? substr.toLowerCase() : "";
+      const ariaLower = aria ? aria.toLowerCase() : "";
+
+      const matchEl = (el) => {
+        const vis = isVisible(el);
+        if (visOnly && !vis) return false;
+        const ariaVal = (el.getAttribute && el.getAttribute("aria-label")) || "";
+        const titleVal = (el.getAttribute && el.getAttribute("title")) || "";
+        const dataName = (el.getAttribute && el.getAttribute("data-name")) || "";
+        const ph = (el.getAttribute && el.getAttribute("placeholder")) || "";
+        const txt = String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+        const val = typeof el.value === "string" ? el.value : "";
+
+        if (ariaLower && !ariaVal.toLowerCase().includes(ariaLower)) return false;
+        if (exactLower) {
+          const hit = [txt, val, ariaVal, titleVal, dataName, ph].some(
+            (s) => s.trim().toLowerCase() === exactLower
+          );
+          if (!hit) return false;
+        }
+        if (subLower) {
+          const hit = [txt, val, ariaVal, titleVal, dataName, ph].some((s) =>
+            s.toLowerCase().includes(subLower)
+          );
+          if (!hit) return false;
+        }
+        return true;
+      };
+
+      let matches = pool.filter(matchEl);
+      if (matches.length === 0 && !sel && (exactLower || subLower || ariaLower)) {
+        const all = Array.from(document.querySelectorAll("*"));
+        matches = all.filter(matchEl).filter((el) => {
+          if (!el.children || el.children.length === 0) return true;
+          return !Array.from(el.children).some((c) => matchEl(c));
+        });
+      }
+
+      const items = matches.slice(0, cap).map((el, i) => {
+        const r = el.getBoundingClientRect();
+        const item = {
+          index: i,
+          tag: el.tagName,
+          visible: isVisible(el),
+          rect: {
+            x: Math.round(r.x),
+            y: Math.round(r.y),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+          },
+        };
+        if (el.id) item.id = el.id;
+        const role = el.getAttribute && el.getAttribute("role");
+        if (role) item.role = role;
+        const dataName = el.getAttribute && el.getAttribute("data-name");
+        if (dataName) item.dataName = dataName;
+        const ariaVal = el.getAttribute && el.getAttribute("aria-label");
+        if (ariaVal) item.ariaLabel = ariaVal.slice(0, txtCap);
+        const titleVal = el.getAttribute && el.getAttribute("title");
+        if (titleVal) item.title = titleVal.slice(0, txtCap);
+        const nameAttr = el.getAttribute && el.getAttribute("name");
+        if (nameAttr) item.name = nameAttr;
+        const txt = String(el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+        if (txt) item.text = txt.slice(0, txtCap);
+        if (typeof el.value === "string" && el.value) item.value = el.value.slice(0, txtCap);
+        if (el.disabled === true || (el.getAttribute && el.getAttribute("aria-disabled") === "true")) {
+          item.disabled = true;
+        }
+        return item;
+      });
+
+      return {
+        ok: true,
+        totalMatched: matches.length,
+        count: items.length,
+        truncated: matches.length > items.length,
+        items,
+      };
+    },
+  });
+  const result = (res && res.result) || { ok: false, error: "no_result" };
+  if (!result.ok) throw new Error(result.error || "dom_query failed");
+  return { tabId, ...result };
 }
 
 /**
@@ -1228,7 +1598,7 @@ async function listPageAssets(cmd) {
   return (res && res.result) || { links: [], images: [] };
 }
 
-/** Type into element by CSS selector (optional clear first). */
+/** Type into element by CSS selector (supports React inputs, optional clear first). */
 async function typeInTab(cmd) {
   const tabId = Number(cmd.tabId);
   if (!Number.isFinite(tabId)) throw new Error("tabId required");
@@ -1238,7 +1608,7 @@ async function typeInTab(cmd) {
   if (!selector || typeof selector !== "string") {
     throw new Error("selector required");
   }
-  if (text.length > 20000) throw new Error("text too long (max 20000)");
+  if (text.length > 1000000) throw new Error("text too long (max 1000000)");
   const clear = cmd.clear !== false;
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
@@ -1248,9 +1618,12 @@ async function typeInTab(cmd) {
       const el = document.querySelector(sel);
       if (!el) return { ok: false, error: `no element matching ${sel}` };
       el.focus();
-      if (doClear && "value" in el) el.value = "";
       if ("value" in el) {
-        el.value = doClear ? value : String(el.value || "") + value;
+        const next = doClear ? value : String(el.value || "") + value;
+        const proto = Object.getPrototypeOf(el);
+        const setter = proto && Object.getOwnPropertyDescriptor(proto, "value")?.set;
+        if (setter) setter.call(el, next);
+        else el.value = next;
         el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
       } else if (el.isContentEditable) {
@@ -1266,6 +1639,557 @@ async function typeInTab(cmd) {
   const result = (res && res.result) || { ok: false, error: "no_result" };
   if (!result.ok) throw new Error(result.error || "type failed");
   return { tabId, selector, typed: text.length, ...result };
+}
+
+/**
+ * Shared CSP-safe editor driver for Monaco, CodeMirror, and standard editable elements.
+ * Supports mode="get" and mode="set" without duplicating discovery logic.
+ */
+async function runEditorInTab(cmd, mode) {
+  const tabId = Number(cmd.tabId);
+  if (!Number.isFinite(tabId)) throw new Error("tabId required");
+  await assertTabInWorkspace(tabId, cmd);
+  const selector = cmd.selector ? String(cmd.selector) : "";
+  const modelIndex = cmd.modelIndex != null ? Math.max(0, Number(cmd.modelIndex) || 0) : null;
+  const maxChars = Math.min(200000, Math.max(200, Number(cmd.maxChars) || 12000));
+  const listModels = cmd.listModels === true;
+  const doFocus = cmd.focus !== false;
+  let nextText = "";
+  if (mode === "set") {
+    if (cmd.text == null) throw new Error("text required");
+    nextText = String(cmd.text);
+    if (nextText.length > 1000000) throw new Error("text too long (max 1000000)");
+  }
+
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [mode, selector, modelIndex, maxChars, listModels, nextText, doFocus],
+    func: (opMode, sel, mIdx, cap, onlyList, newValue, focusEditor) => {
+      try {
+        const isVisible = (el) => {
+          if (!el || !el.getBoundingClientRect) return false;
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) return false;
+          const cs = getComputedStyle(el);
+          return cs.display !== "none" && cs.visibility !== "hidden";
+        };
+
+        const safeCall = (fn, thisArg) => {
+          try {
+            return fn.call(thisArg);
+          } catch {
+            return undefined;
+          }
+        };
+
+        const isModelLike = (o) => {
+          try {
+            return Boolean(
+              o &&
+                typeof o === "object" &&
+                typeof o.getValue === "function" &&
+                typeof o.pushEditOperations === "function" &&
+                typeof o.getFullModelRange === "function" &&
+                (typeof o.isDisposed !== "function" || !o.isDisposed())
+            );
+          } catch {
+            return false;
+          }
+        };
+
+        const isEditorLike = (o) => {
+          try {
+            return Boolean(
+              o &&
+                typeof o === "object" &&
+                typeof o.getModel === "function" &&
+                (typeof o.setValue === "function" || typeof o.getValue === "function")
+            );
+          } catch {
+            return false;
+          }
+        };
+
+        const scanMonacoViaDom = () => {
+          const foundEditors = [];
+          const seenFound = new Set();
+          const rootSel = sel || '.monaco-editor, [data-name="pine-dialog"]';
+          const roots = Array.from(document.querySelectorAll(rootSel));
+          for (const root of roots) {
+            const seeds = [];
+            let cur = root;
+            for (let i = 0; i < 6 && cur; i += 1, cur = cur.parentElement) seeds.push(cur);
+            const innerArea = root.querySelector && root.querySelector("textarea.inputarea");
+            if (innerArea) seeds.push(innerArea);
+
+            const visited = new WeakSet();
+            const queue = [];
+            for (const s of seeds) {
+              let keys;
+              try {
+                keys = Object.keys(s);
+              } catch {
+                continue;
+              }
+              for (const k of keys) {
+                if (
+                  k.startsWith("__reactFiber$") ||
+                  k.startsWith("__reactProps$") ||
+                  k.startsWith("__reactInternalInstance$") ||
+                  k.toLowerCase().includes("monaco") ||
+                  k.toLowerCase().includes("editor")
+                ) {
+                  try {
+                    const val = s[k];
+                    if (val && typeof val === "object") queue.push({ obj: val, depth: 0 });
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              }
+            }
+
+            let steps = 0;
+            while (queue.length > 0 && steps < 400) {
+              const { obj, depth } = queue.shift();
+              steps += 1;
+              if (!obj || typeof obj !== "object" || depth > 8) continue;
+              if (obj === window || obj === document || obj instanceof Node) continue;
+              try {
+                if (visited.has(obj)) continue;
+                visited.add(obj);
+              } catch {
+                continue;
+              }
+              if (isEditorLike(obj)) {
+                if (!seenFound.has(obj)) {
+                  seenFound.add(obj);
+                  foundEditors.push({ editor: obj, dom: root });
+                }
+                continue;
+              }
+              if (isModelLike(obj)) {
+                if (!seenFound.has(obj)) {
+                  seenFound.add(obj);
+                  foundEditors.push({ model: obj, dom: root });
+                }
+                continue;
+              }
+              let keys;
+              try {
+                keys = Object.keys(obj);
+              } catch {
+                continue;
+              }
+              for (const k of keys) {
+                if (k === "parent" || k === "_owner" || k === "stateNode") {
+                  try {
+                    if (k === "stateNode" && obj[k] instanceof Node) continue;
+                  } catch {
+                    continue;
+                  }
+                }
+                if (
+                  depth < 5 ||
+                  k === "current" ||
+                  k === "memoizedProps" ||
+                  k === "memoizedState" ||
+                  k === "return" ||
+                  k === "child" ||
+                  k === "sibling" ||
+                  k === "editor" ||
+                  k === "_editor" ||
+                  k === "model" ||
+                  k === "ref"
+                ) {
+                  try {
+                    const next = obj[k];
+                    if (
+                      next &&
+                      typeof next === "object" &&
+                      next !== window &&
+                      next !== document &&
+                      !(next instanceof Node)
+                    ) {
+                      queue.push({ obj: next, depth: depth + 1 });
+                    }
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              }
+            }
+          }
+          return foundEditors;
+        };
+
+        const targets = [];
+        const seenModels = new Set();
+        const pushTarget = (entry) => {
+          const model = entry.model || (entry.editor && safeCall(entry.editor.getModel, entry.editor));
+          if (model && seenModels.has(model)) return;
+          if (model) seenModels.add(model);
+          targets.push({ ...entry, model: model || null });
+        };
+
+        const monaco = window.monaco && window.monaco.editor;
+        if (monaco) {
+          const editors = typeof monaco.getEditors === "function" ? monaco.getEditors() : [];
+          for (const ed of editors) {
+            const dom = typeof ed.getDomNode === "function" ? ed.getDomNode() : null;
+            if (sel && dom && !(dom.matches(sel) || dom.closest(sel) || dom.querySelector(sel))) {
+              continue;
+            }
+            const model = typeof ed.getModel === "function" ? ed.getModel() : null;
+            if (model && typeof model.isDisposed === "function" && model.isDisposed()) continue;
+            pushTarget({
+              kind: "monaco-editor",
+              editor: ed,
+              model,
+              dom,
+              visible: dom ? isVisible(dom) : true,
+              focused: typeof ed.hasTextFocus === "function" ? Boolean(safeCall(ed.hasTextFocus, ed)) : false,
+            });
+          }
+          const models = typeof monaco.getModels === "function" ? monaco.getModels() : [];
+          for (const m of models) {
+            if (typeof m.isDisposed === "function" && m.isDisposed()) continue;
+            pushTarget({ kind: "monaco-model", model: m, visible: true, focused: false });
+          }
+        }
+
+        if (targets.length === 0) {
+          for (const found of scanMonacoViaDom()) {
+            pushTarget({
+              kind: found.editor ? "monaco-react-editor" : "monaco-react-model",
+              editor: found.editor || null,
+              model: found.model || null,
+              dom: found.dom,
+              visible: found.dom ? isVisible(found.dom) : true,
+              focused: false,
+            });
+          }
+        }
+
+        for (const cmDom of document.querySelectorAll(sel || ".cm-editor")) {
+          const view = cmDom.cmView?.view || cmDom.querySelector(".cm-content")?.cmView?.view;
+          if (view && view.state && view.state.doc) {
+            targets.push({
+              kind: "codemirror6",
+              cm6: view,
+              dom: cmDom,
+              visible: isVisible(cmDom),
+              focused: Boolean(view.hasFocus),
+            });
+          }
+        }
+        for (const cm5Dom of document.querySelectorAll(sel || ".CodeMirror")) {
+          if (cm5Dom.CodeMirror && typeof cm5Dom.CodeMirror.getValue === "function") {
+            targets.push({
+              kind: "codemirror5",
+              cm5: cm5Dom.CodeMirror,
+              dom: cm5Dom,
+              visible: isVisible(cm5Dom),
+              focused:
+                typeof cm5Dom.CodeMirror.hasFocus === "function"
+                  ? Boolean(cm5Dom.CodeMirror.hasFocus())
+                  : false,
+            });
+          }
+        }
+
+        const scoreTarget = (t) => {
+          const lang =
+            t.model && typeof t.model.getLanguageId === "function"
+              ? safeCall(t.model.getLanguageId, t.model) || ""
+              : "";
+          return (
+            (t.focused ? 100 : 0) +
+            (t.visible ? 40 : 0) +
+            (/pine/i.test(String(lang)) ? 30 : 0) +
+            (t.editor ? 10 : 0)
+          );
+        };
+
+        if (opMode === "get") {
+          if (sel || targets.length === 0) {
+            const areas = Array.from(
+              document.querySelectorAll(sel || 'textarea:not(.inputarea), [contenteditable="true"]')
+            );
+            for (const el of areas) {
+              if (!isVisible(el) && !sel) continue;
+              targets.push({
+                kind: el.tagName === "TEXTAREA" || el.tagName === "INPUT" ? "textarea" : "contenteditable",
+                el,
+                dom: el,
+                visible: isVisible(el),
+                focused: document.activeElement === el,
+              });
+            }
+          }
+
+          if (targets.length === 0) {
+            const monacoDom = document.querySelector(sel || ".monaco-editor");
+            if (monacoDom) {
+              const lines = Array.from(monacoDom.querySelectorAll(".view-line")).map((n) => n.innerText || "");
+              const raw = lines.join("\n");
+              return {
+                ok: true,
+                kind: "monaco-dom-visible",
+                language: null,
+                lineCount: lines.length,
+                charCount: raw.length,
+                truncated: raw.length > cap,
+                value: raw.slice(0, cap),
+              };
+            }
+            return { ok: false, error: "no supported code editor found in page" };
+          }
+
+          const readEntry = (t) => {
+            if (t.model) {
+              const val = String(t.model.getValue());
+              const lang =
+                typeof t.model.getLanguageId === "function"
+                  ? safeCall(t.model.getLanguageId, t.model)
+                  : typeof t.model.getModeId === "function"
+                    ? safeCall(t.model.getModeId, t.model)
+                    : null;
+              const uri = t.model.uri ? String(t.model.uri.toString ? t.model.uri.toString() : t.model.uri) : null;
+              const lc =
+                typeof t.model.getLineCount === "function" ? t.model.getLineCount() : val.split("\n").length;
+              return { kind: t.kind, language: lang || null, uri, lineCount: lc, value: val };
+            }
+            if (t.editor && typeof t.editor.getValue === "function") {
+              const val = String(safeCall(t.editor.getValue, t.editor) || "");
+              return { kind: t.kind, language: null, uri: null, lineCount: val.split("\n").length, value: val };
+            }
+            if (t.cm6) {
+              const val = String(t.cm6.state.doc.toString());
+              return { kind: t.kind, language: null, uri: null, lineCount: t.cm6.state.doc.lines, value: val };
+            }
+            if (t.cm5) {
+              const val = String(t.cm5.getValue());
+              return { kind: t.kind, language: null, uri: null, lineCount: t.cm5.lineCount(), value: val };
+            }
+            const val = String(t.el && "value" in t.el ? t.el.value || "" : (t.el && t.el.textContent) || "");
+            return { kind: t.kind, language: null, uri: null, lineCount: val.split("\n").length, value: val };
+          };
+
+          const enriched = targets.map((t, idx) => {
+            const info = readEntry(t);
+            return {
+              idx,
+              t,
+              info,
+              s: scoreTarget(t) + (info.value.length > 0 ? 10 : 0),
+            };
+          });
+
+          if (onlyList) {
+            return {
+              ok: true,
+              count: enriched.length,
+              models: enriched.map((e) => ({
+                index: e.idx,
+                kind: e.info.kind,
+                language: e.info.language,
+                uri: e.info.uri,
+                visible: Boolean(e.t.visible),
+                focused: Boolean(e.t.focused),
+                lineCount: e.info.lineCount,
+                charCount: e.info.value.length,
+                preview: e.info.value.slice(0, 160),
+              })),
+            };
+          }
+
+          const chosen =
+            mIdx !== null
+              ? enriched[Math.min(mIdx, enriched.length - 1)]
+              : [...enriched].sort((a, b) => b.s - a.s)[0];
+          const raw = chosen.info.value;
+          return {
+            ok: true,
+            modelIndex: chosen.idx,
+            modelCount: enriched.length,
+            kind: chosen.info.kind,
+            language: chosen.info.language,
+            uri: chosen.info.uri,
+            lineCount: chosen.info.lineCount,
+            charCount: raw.length,
+            truncated: raw.length > cap,
+            value: raw.slice(0, cap),
+          };
+        }
+
+        // opMode === "set"
+        if (targets.length > 0) {
+          const chosen =
+            mIdx !== null
+              ? targets[Math.min(mIdx, targets.length - 1)]
+              : [...targets].sort((a, b) => scoreTarget(b) - scoreTarget(a))[0];
+
+          if (chosen.model) {
+            if (focusEditor && chosen.editor && typeof chosen.editor.focus === "function") {
+              chosen.editor.focus();
+            }
+            if (
+              typeof chosen.model.pushEditOperations === "function" &&
+              typeof chosen.model.getFullModelRange === "function"
+            ) {
+              chosen.model.pushEditOperations(
+                [],
+                [{ range: chosen.model.getFullModelRange(), text: newValue }],
+                () => null
+              );
+            } else if (chosen.editor && typeof chosen.editor.setValue === "function") {
+              chosen.editor.setValue(newValue);
+            } else {
+              chosen.model.setValue(newValue);
+            }
+            if (chosen.editor && typeof chosen.editor.setPosition === "function") {
+              chosen.editor.setPosition({ lineNumber: 1, column: 1 });
+            }
+            const after = String(chosen.model.getValue());
+            const lc =
+              typeof chosen.model.getLineCount === "function"
+                ? chosen.model.getLineCount()
+                : after.split("\n").length;
+            return {
+              ok: true,
+              kind: chosen.kind,
+              verified: after === newValue,
+              lineCount: lc,
+              charCount: after.length,
+            };
+          }
+          if (chosen.editor && typeof chosen.editor.setValue === "function") {
+            if (focusEditor && typeof chosen.editor.focus === "function") chosen.editor.focus();
+            chosen.editor.setValue(newValue);
+            const after =
+              typeof chosen.editor.getValue === "function" ? String(chosen.editor.getValue()) : newValue;
+            return {
+              ok: true,
+              kind: chosen.kind,
+              verified: after === newValue,
+              lineCount: after.split("\n").length,
+              charCount: after.length,
+            };
+          }
+          if (chosen.cm6) {
+            if (focusEditor && typeof chosen.cm6.focus === "function") chosen.cm6.focus();
+            chosen.cm6.dispatch({
+              changes: { from: 0, to: chosen.cm6.state.doc.length, insert: newValue },
+            });
+            const after = String(chosen.cm6.state.doc.toString());
+            return {
+              ok: true,
+              kind: chosen.kind,
+              verified: after === newValue,
+              lineCount: chosen.cm6.state.doc.lines,
+              charCount: after.length,
+            };
+          }
+          if (chosen.cm5) {
+            if (focusEditor && typeof chosen.cm5.focus === "function") chosen.cm5.focus();
+            chosen.cm5.setValue(newValue);
+            const after = String(chosen.cm5.getValue());
+            return {
+              ok: true,
+              kind: chosen.kind,
+              verified: after === newValue,
+              lineCount: chosen.cm5.lineCount(),
+              charCount: after.length,
+            };
+          }
+        }
+
+        // Sealed Monaco textarea.inputarea synthetic paste fallback
+        const monacoInput = document.querySelector(
+          sel ? `${sel} textarea.inputarea, ${sel}` : ".monaco-editor textarea.inputarea"
+        );
+        if (monacoInput && monacoInput.tagName === "TEXTAREA") {
+          monacoInput.focus();
+          monacoInput.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "a", code: "KeyA", ctrlKey: true, bubbles: true })
+          );
+          try {
+            document.execCommand("selectAll", false);
+          } catch {
+            /* ignore */
+          }
+          try {
+            const dt = new DataTransfer();
+            dt.setData("text/plain", newValue);
+            monacoInput.dispatchEvent(
+              new ClipboardEvent("paste", {
+                bubbles: true,
+                cancelable: true,
+                clipboardData: dt,
+              })
+            );
+            return {
+              ok: true,
+              kind: "monaco-paste-fallback",
+              verified: false,
+              lineCount: newValue.split("\n").length,
+              charCount: newValue.length,
+            };
+          } catch {
+            /* fall through */
+          }
+        }
+
+        const fallbackEl = document.querySelector(
+          sel || 'textarea:not(.inputarea), [contenteditable="true"]'
+        );
+        if (!fallbackEl) {
+          return { ok: false, error: "no supported code editor or editable element found" };
+        }
+        fallbackEl.focus();
+        if ("value" in fallbackEl) {
+          const proto = Object.getPrototypeOf(fallbackEl);
+          const setter = proto && Object.getOwnPropertyDescriptor(proto, "value")?.set;
+          if (setter) setter.call(fallbackEl, newValue);
+          else fallbackEl.value = newValue;
+          fallbackEl.dispatchEvent(new Event("input", { bubbles: true }));
+          fallbackEl.dispatchEvent(new Event("change", { bubbles: true }));
+        } else if (fallbackEl.isContentEditable) {
+          fallbackEl.textContent = newValue;
+          fallbackEl.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        return {
+          ok: true,
+          kind: fallbackEl.tagName === "TEXTAREA" ? "textarea" : "contenteditable",
+          verified: true,
+          lineCount: newValue.split("\n").length,
+          charCount: newValue.length,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: `editor_${opMode} exception: ${String(
+            err && (err.message || err.stack) ? err.message || err.stack : err
+          ).slice(0, 300)}`,
+        };
+      }
+    },
+  });
+  const result = (res && res.result) || { ok: false, error: "no_result" };
+  if (!result.ok) throw new Error(result.error || `editor_${mode} failed`);
+  return { tabId, ...result };
+}
+
+/** Read code/text from Monaco, CodeMirror, or standard editable elements (CSP-safe). */
+async function editorGetInTab(cmd) {
+  return await runEditorInTab(cmd, "get");
+}
+
+/** Replace code/text in Monaco, CodeMirror, or standard editable elements (CSP-safe). */
+async function editorSetInTab(cmd) {
+  return await runEditorInTab(cmd, "set");
 }
 
 /**
@@ -1329,7 +2253,13 @@ async function readPage(cmd) {
     }
   } else {
     if (!cmd.url) throw new Error("url or tabId required");
-    const nav = await navigateTab({ url: cmd.url, active: false });
+    const nav = await navigateTab({
+      url: cmd.url,
+      active: false,
+      separateWindow: cmd.separateWindow === true,
+      width: cmd.width,
+      height: cmd.height,
+    });
     tabId = nav.tabId;
   }
   const waitMs = Math.min(60000, Math.max(1000, Number(cmd.waitMs) || 15000));
@@ -1370,14 +2300,28 @@ async function handleCommand(cmd) {
         version: chrome.runtime.getManifest().version,
       };
     case "start":
-      return await ensureGroup(cmd.url || null);
+      return await ensureGroup(cmd.url || null, {
+        separateWindow: cmd.separateWindow === true,
+        width: cmd.width,
+        height: cmd.height,
+      });
     case "open":
       if (!cmd.url) throw new Error("url required");
-      return await openInGroup(cmd.url, { newTab: false });
+      return await openInGroup(cmd.url, {
+        newTab: cmd.newTab === true,
+        separateWindow: cmd.separateWindow === true,
+        width: cmd.width,
+        height: cmd.height,
+      });
     case "new_tab":
     case "new-tab":
       if (!cmd.url) throw new Error("url required");
-      return await openInGroup(cmd.url, { newTab: true });
+      return await openInGroup(cmd.url, {
+        newTab: true,
+        separateWindow: cmd.separateWindow === true,
+        width: cmd.width,
+        height: cmd.height,
+      });
     case "navigate":
       return await navigateTab(cmd);
     case "read_page":
@@ -1393,6 +2337,15 @@ async function handleCommand(cmd) {
       return await clickInTab(cmd);
     case "type":
       return await typeInTab(cmd);
+    case "dom_query":
+    case "dom-query":
+      return await domQueryInTab(cmd);
+    case "editor_get":
+    case "editor-get":
+      return await editorGetInTab(cmd);
+    case "editor_set":
+    case "editor-set":
+      return await editorSetInTab(cmd);
     case "fetch_url":
     case "fetch-url":
     case "save_url":

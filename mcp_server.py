@@ -159,12 +159,17 @@ def compact_tabs(data: dict[str, Any], *, limit: int | None = None) -> dict[str,
 
 
 def compact_nav(data: dict[str, Any]) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "ok": data.get("ok", True) is not False,
         "tabId": data.get("tabId") if data.get("tabId") is not None else data.get("id"),
         "url": _ellipsis(str(data.get("url") or ""), TAB_URL_MAX),
         "mode": data.get("mode"),
     }
+    if data.get("windowId") is not None:
+        out["windowId"] = data.get("windowId")
+    if data.get("separateWindow") is not None:
+        out["separateWindow"] = bool(data.get("separateWindow"))
+    return out
 
 
 def compact_eval(data: dict[str, Any]) -> dict[str, Any]:
@@ -424,6 +429,11 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "integer",
                     "description": "Text excerpt cap chars (default 4000, max 20000)",
                 },
+                "separate_window": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Open in a dedicated unfocused background Chrome window",
+                },
             },
         },
     },
@@ -461,13 +471,44 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "hermes_chrome_open",
+        "name": "hermes_chrome_start",
         "description": (
-            "Open http(s) URL in the workspace (inactive tab). Returns tabId."
+            "Start or ensure the Hermes workspace Tab Group. "
+            "Set separate_window=true to isolate it in an unfocused background window."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"url": {"type": "string"}},
+            "properties": {
+                "url": {"type": "string", "description": "Optional initial http(s) URL"},
+                "separate_window": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Open in an unfocused dedicated background Chrome window",
+                },
+                "width": {"type": "integer", "description": "Window width (default 1280)"},
+                "height": {"type": "integer", "description": "Window height (default 840)"},
+            },
+        },
+    },
+    {
+        "name": "hermes_chrome_open",
+        "description": (
+            "Open http(s) URL in the workspace (inactive tab). "
+            "Set separate_window=true to open in an unfocused dedicated window."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "new_tab": {"type": "boolean", "default": False},
+                "separate_window": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Isolate workspace in an unfocused background Chrome window",
+                },
+                "width": {"type": "integer", "description": "Window width (default 1280)"},
+                "height": {"type": "integer", "description": "Window height (default 840)"},
+            },
             "required": ["url"],
         },
     },
@@ -518,14 +559,24 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "hermes_chrome_click",
-        "description": "Click a CSS selector in a tab.",
+        "description": (
+            "Click an element by CSS selector and/or visible text/aria-label (CSP-safe)."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "tab_id": {"type": "integer"},
                 "selector": {"type": "string"},
+                "text": {"type": "string", "description": "Exact text/aria-label match"},
+                "text_includes": {
+                    "type": "string",
+                    "description": "Case-insensitive substring match against text/aria-label/title",
+                },
+                "index": {"type": "integer", "default": 0},
+                "visible_only": {"type": "boolean"},
+                "mouse_events": {"type": "boolean", "default": False},
             },
-            "required": ["tab_id", "selector"],
+            "required": ["tab_id"],
         },
     },
     {
@@ -542,6 +593,65 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["tab_id", "selector", "text"],
         },
     },
+    {
+        "name": "hermes_chrome_dom_query",
+        "description": (
+            "Inspect matching DOM elements (CSP-safe, no eval). "
+            "Filter by CSS selector, text, text_includes, or aria_label."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer"},
+                "selector": {"type": "string"},
+                "text": {"type": "string"},
+                "text_includes": {"type": "string"},
+                "aria_label": {"type": "string"},
+                "visible_only": {"type": "boolean", "default": True},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "required": ["tab_id"],
+        },
+    },
+    {
+        "name": "hermes_chrome_editor_get",
+        "description": (
+            "Read Monaco/CodeMirror/textarea editor content or list models (CSP-safe)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer"},
+                "selector": {"type": "string"},
+                "model_index": {"type": "integer"},
+                "max_chars": {"type": "integer", "default": 4000},
+                "list_models": {"type": "boolean", "default": False},
+            },
+            "required": ["tab_id"],
+        },
+    },
+    {
+        "name": "hermes_chrome_editor_set",
+        "description": (
+            "Replace Monaco/CodeMirror/textarea editor content (CSP-safe). "
+            "Provide inline text or local file_path (up to 1M chars)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer"},
+                "text": {"type": "string"},
+                "file_path": {
+                    "type": "string",
+                    "description": "Local UTF-8 file path to load into the editor",
+                },
+                "selector": {"type": "string"},
+                "model_index": {"type": "integer"},
+                "focus": {"type": "boolean", "default": True},
+            },
+            "required": ["tab_id"],
+        },
+    },
 ]
 
 
@@ -552,6 +662,17 @@ def _tool_result(obj: Any, *, is_error: bool = False) -> dict[str, Any]:
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
     }
+
+
+def _send_tool_result(
+    action: str,
+    extra: dict[str, Any] | None = None,
+    *,
+    wait_s: float = 30.0,
+) -> dict[str, Any]:
+    data = send_command(action, extra, wait_s=wait_s)
+    is_err = isinstance(data, dict) and (data.get("ok") is False or bool(data.get("error")))
+    return _tool_result(data, is_error=is_err)
 
 
 def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
@@ -605,6 +726,8 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             extra["waitMs"] = max(1000, min(int(args.get("wait_ms") or 15000), 60000))
             if args.get("text_max") is not None:
                 extra["textMax"] = max(200, min(int(args["text_max"]), 20000))
+            if args.get("separate_window"):
+                extra["separateWindow"] = True
             # Budget must cover the page-load wait plus extraction overhead.
             data = send_command(
                 "read_page", extra, wait_s=extra["waitMs"] / 1000 + 25.0
@@ -626,11 +749,35 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
                 )
             )
 
+        if name == "hermes_chrome_start":
+            extra: dict[str, Any] = {}
+            if args.get("url"):
+                extra["url"] = str(args["url"])
+            if args.get("separate_window"):
+                extra["separateWindow"] = True
+            if args.get("width") is not None:
+                extra["width"] = int(args["width"])
+            if args.get("height") is not None:
+                extra["height"] = int(args["height"])
+            data = send_command("start", extra)
+            if isinstance(data, dict) and not data.get("error"):
+                return _tool_result(compact_nav(data))
+            return _tool_result(data, is_error=True)
+
         if name == "hermes_chrome_open":
             url = str(args.get("url") or "")
             if not url:
                 return _tool_result({"ok": False, "error": "url required"}, is_error=True)
-            data = send_command("open", {"url": url})
+            extra: dict[str, Any] = {"url": url}
+            if args.get("new_tab"):
+                extra["newTab"] = True
+            if args.get("separate_window"):
+                extra["separateWindow"] = True
+            if args.get("width") is not None:
+                extra["width"] = int(args["width"])
+            if args.get("height") is not None:
+                extra["height"] = int(args["height"])
+            data = send_command("open", extra)
             if isinstance(data, dict) and not data.get("error"):
                 return _tool_result(compact_nav(data))
             return _tool_result(data, is_error=True)
@@ -671,28 +818,101 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             return _tool_result(data)
 
         if name == "hermes_chrome_click":
-            return _tool_result(
-                send_command(
-                    "click",
-                    {
-                        "tabId": int(args["tab_id"]),
-                        "selector": str(args["selector"]),
-                    },
+            extra: dict[str, Any] = {"tabId": int(args["tab_id"])}
+            if args.get("selector"):
+                extra["selector"] = str(args["selector"])
+            if args.get("text"):
+                extra["text"] = str(args["text"])
+            if args.get("text_includes"):
+                extra["textIncludes"] = str(args["text_includes"])
+            if not any(k in extra for k in ("selector", "text", "textIncludes")):
+                return _tool_result(
+                    {"ok": False, "error": "selector, text, or text_includes required"},
+                    is_error=True,
                 )
-            )
+            if args.get("index") is not None:
+                extra["index"] = int(args["index"])
+            if args.get("visible_only") is not None:
+                extra["visibleOnly"] = bool(args["visible_only"])
+            if args.get("mouse_events"):
+                extra["mouseEvents"] = True
+            return _send_tool_result("click", extra)
 
         if name == "hermes_chrome_type":
-            return _tool_result(
-                send_command(
-                    "type",
-                    {
-                        "tabId": int(args["tab_id"]),
-                        "selector": str(args["selector"]),
-                        "text": str(args.get("text") or ""),
-                        "clear": not bool(args.get("append")),
-                    },
-                )
+            return _send_tool_result(
+                "type",
+                {
+                    "tabId": int(args["tab_id"]),
+                    "selector": str(args["selector"]),
+                    "text": str(args.get("text") or ""),
+                    "clear": not bool(args.get("append")),
+                },
             )
+
+        if name == "hermes_chrome_dom_query":
+            extra = {"tabId": int(args["tab_id"])}
+            if args.get("selector"):
+                extra["selector"] = str(args["selector"])
+            if args.get("text"):
+                extra["text"] = str(args["text"])
+            if args.get("text_includes"):
+                extra["textIncludes"] = str(args["text_includes"])
+            if args.get("aria_label"):
+                extra["ariaLabel"] = str(args["aria_label"])
+            if args.get("visible_only") is not None:
+                extra["visibleOnly"] = bool(args["visible_only"])
+            if args.get("limit") is not None:
+                extra["limit"] = max(1, min(int(args["limit"]), 100))
+            return _send_tool_result("dom_query", extra)
+
+        if name == "hermes_chrome_editor_get":
+            extra = {
+                "tabId": int(args["tab_id"]),
+                "maxChars": max(200, min(int(args.get("max_chars") or 4000), 8000)),
+                "listModels": bool(args.get("list_models")),
+            }
+            if args.get("selector"):
+                extra["selector"] = str(args["selector"])
+            if args.get("model_index") is not None:
+                extra["modelIndex"] = int(args["model_index"])
+            return _send_tool_result("editor_get", extra)
+
+        if name == "hermes_chrome_editor_set":
+            text = args.get("text")
+            file_path = args.get("file_path")
+            if text is None and not file_path:
+                return _tool_result(
+                    {"ok": False, "error": "text or file_path required"},
+                    is_error=True,
+                )
+            if text is None and file_path:
+                p = Path(str(file_path)).expanduser()
+                if not p.is_file():
+                    return _tool_result(
+                        {"ok": False, "error": f"file not found: {p}"},
+                        is_error=True,
+                    )
+                text = p.read_text(encoding="utf-8")
+            else:
+                text = str(text)
+            if len(text) > 1_000_000:
+                return _tool_result(
+                    {
+                        "ok": False,
+                        "error": f"text too large ({len(text)} chars, max 1000000)",
+                    },
+                    is_error=True,
+                )
+            extra = {
+                "tabId": int(args["tab_id"]),
+                "text": text,
+                "focus": args.get("focus", True) is not False,
+            }
+            if args.get("selector"):
+                extra["selector"] = str(args["selector"])
+            if args.get("model_index") is not None:
+                extra["modelIndex"] = int(args["model_index"])
+            return _send_tool_result("editor_set", extra, wait_s=45.0)
 
         return _tool_result({"ok": False, "error": f"unknown tool: {name}"}, is_error=True)
     except Exception as e:  # noqa: BLE001 — surface to MCP client
@@ -700,21 +920,30 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# MCP stdio framing (Content-Length)
+# MCP stdio framing (auto-detects NDJSON vs Content-Length)
 # ---------------------------------------------------------------------------
 
+_framing_mode = "content-length"
+
+
 def _read_message() -> dict[str, Any] | None:
+    global _framing_mode
     headers: dict[str, str] = {}
     while True:
         line = sys.stdin.buffer.readline()
         if not line:
             return None
         if line in (b"\r\n", b"\n"):
+            if not headers:
+                continue
             break
         try:
             text = line.decode("utf-8").strip()
         except UnicodeDecodeError:
             continue
+        if not headers and text.startswith(("{", "[")):
+            _framing_mode = "ndjson"
+            return json.loads(text)
         if ":" not in text:
             continue
         k, _, v = text.partition(":")
@@ -725,12 +954,16 @@ def _read_message() -> dict[str, Any] | None:
     body = sys.stdin.buffer.read(length)
     if not body:
         return None
+    _framing_mode = "content-length"
     return json.loads(body.decode("utf-8"))
 
 
 def _write_message(msg: dict[str, Any]) -> None:
     raw = json.dumps(msg, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    sys.stdout.buffer.write(f"Content-Length: {len(raw)}\r\n\r\n".encode("ascii") + raw)
+    if _framing_mode == "ndjson":
+        sys.stdout.buffer.write(raw + b"\n")
+    else:
+        sys.stdout.buffer.write(f"Content-Length: {len(raw)}\r\n\r\n".encode("ascii") + raw)
     sys.stdout.buffer.flush()
 
 

@@ -163,6 +163,156 @@ class CompactTests(unittest.TestCase):
         self.assertNotIn("\n", text)
         self.assertEqual(json.loads(text), {"ok": True, "tabId": 1})
 
+    def test_stdio_framing_supports_ndjson_and_content_length(self) -> None:
+        import io
+        import sys as _sys
+
+        saved_in, saved_out, saved_mode = _sys.stdin, _sys.stdout, m._framing_mode
+        try:
+            nd_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n"
+            fake_in = type("_FakeStream", (), {"buffer": io.BytesIO(nd_req.encode("utf-8"))})()
+            out_buf = io.BytesIO()
+            fake_out = type("_FakeStream", (), {"buffer": out_buf})()
+            _sys.stdin, _sys.stdout = fake_in, fake_out
+            got = m._read_message()
+            self.assertEqual(got["method"], "ping")
+            self.assertEqual(m._framing_mode, "ndjson")
+            m._write_message({"jsonrpc": "2.0", "id": 1, "result": {}})
+            self.assertTrue(out_buf.getvalue().endswith(b"\n"))
+            self.assertFalse(out_buf.getvalue().startswith(b"Content-Length:"))
+
+            raw = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}).encode("utf-8")
+            cl_req = f"Content-Length: {len(raw)}\r\n\r\n".encode("ascii") + raw
+            fake_in2 = type("_FakeStream", (), {"buffer": io.BytesIO(cl_req)})()
+            out_buf2 = io.BytesIO()
+            fake_out2 = type("_FakeStream", (), {"buffer": out_buf2})()
+            _sys.stdin, _sys.stdout = fake_in2, fake_out2
+            got2 = m._read_message()
+            self.assertEqual(got2["id"], 2)
+            self.assertEqual(m._framing_mode, "content-length")
+            m._write_message({"jsonrpc": "2.0", "id": 2, "result": {}})
+            self.assertTrue(out_buf2.getvalue().startswith(b"Content-Length:"))
+        finally:
+            _sys.stdin, _sys.stdout, m._framing_mode = saved_in, saved_out, saved_mode
+
+    def test_csp_safe_tools_dispatch_and_validation(self) -> None:
+        import tempfile
+        from unittest.mock import patch
+
+        # Click requires selector, text, or text_includes.
+        bad_click = m.call_tool("hermes_chrome_click", {"tab_id": 1})
+        self.assertTrue(bad_click["isError"])
+
+        bad_set = m.call_tool("hermes_chrome_editor_set", {"tab_id": 1})
+        self.assertTrue(bad_set["isError"])
+
+        calls: list[tuple[str, dict]] = []
+
+        def fake_send(action, extra=None, *, wait_s=30.0):
+            calls.append((action, dict(extra or {})))
+            return {"ok": True, "action": action}
+
+        with patch.object(m, "send_command", side_effect=fake_send):
+            r_click = m.call_tool(
+                "hermes_chrome_click",
+                {"tab_id": 7, "text_includes": "Update on chart", "mouse_events": True},
+            )
+            self.assertFalse(r_click["isError"])
+            r_query = m.call_tool(
+                "hermes_chrome_dom_query",
+                {"tab_id": 7, "text_includes": "Pine Editor", "limit": 999},
+            )
+            self.assertFalse(r_query["isError"])
+            r_get = m.call_tool(
+                "hermes_chrome_editor_get",
+                {"tab_id": 7, "max_chars": 999999, "list_models": True},
+            )
+            self.assertFalse(r_get["isError"])
+
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".pine", encoding="utf-8", delete=False
+            ) as tmp:
+                tmp.write("//@version=6\nindicator('ok')\n")
+                tmp_path = tmp.name
+            try:
+                r_set = m.call_tool(
+                    "hermes_chrome_editor_set",
+                    {"tab_id": 7, "file_path": tmp_path},
+                )
+                self.assertFalse(r_set["isError"])
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+
+        self.assertEqual(calls[0][0], "click")
+        self.assertEqual(calls[0][1]["textIncludes"], "Update on chart")
+        self.assertTrue(calls[0][1]["mouseEvents"])
+        self.assertEqual(calls[1][0], "dom_query")
+        self.assertEqual(calls[1][1]["limit"], 100)
+        self.assertEqual(calls[2][0], "editor_get")
+        self.assertEqual(calls[2][1]["maxChars"], 8000)
+        self.assertTrue(calls[2][1]["listModels"])
+        self.assertEqual(calls[3][0], "editor_set")
+        self.assertIn("indicator('ok')", calls[3][1]["text"])
+
+    def test_mcp_tool_names_include_csp_safe_actions(self) -> None:
+        names = {t["name"] for t in m.TOOLS}
+        self.assertTrue(
+            {
+                "hermes_chrome_start",
+                "hermes_chrome_open",
+                "hermes_chrome_dom_query",
+                "hermes_chrome_editor_get",
+                "hermes_chrome_editor_set",
+                "hermes_chrome_click",
+            }.issubset(names)
+        )
+
+    def test_separate_window_dispatch_and_compact_nav(self) -> None:
+        from unittest.mock import patch
+
+        calls: list[tuple[str, dict]] = []
+
+        def fake_send(action, extra=None, *, wait_s=30.0):
+            calls.append((action, dict(extra or {})))
+            return {
+                "tabId": 42,
+                "windowId": 9001,
+                "separateWindow": True,
+                "url": extra.get("url") or "chrome://newtab/",
+                "mode": "new_window",
+            }
+
+        with patch.object(m, "send_command", side_effect=fake_send):
+            r_start = m.call_tool(
+                "hermes_chrome_start",
+                {"separate_window": True, "width": 1000, "height": 700},
+            )
+            r_open = m.call_tool(
+                "hermes_chrome_open",
+                {
+                    "url": "https://example.com",
+                    "separate_window": True,
+                    "new_tab": True,
+                },
+            )
+            r_read = m.call_tool(
+                "hermes_chrome_read_page",
+                {"url": "https://example.com", "separate_window": True},
+            )
+
+        self.assertFalse(r_start["isError"])
+        self.assertFalse(r_open["isError"])
+        self.assertFalse(r_read["isError"])
+        self.assertEqual(calls[0], ("start", {"separateWindow": True, "width": 1000, "height": 700}))
+        self.assertEqual(
+            calls[1],
+            ("open", {"url": "https://example.com", "newTab": True, "separateWindow": True}),
+        )
+        self.assertTrue(calls[2][1]["separateWindow"])
+        open_payload = json.loads(r_open["content"][0]["text"])
+        self.assertEqual(open_payload["windowId"], 9001)
+        self.assertTrue(open_payload["separateWindow"])
+
 
 if __name__ == "__main__":
     unittest.main()

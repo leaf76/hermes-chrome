@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   One-shot Windows install: local bridge autostart + optional Grok MCP registration.
@@ -64,6 +64,8 @@ function Find-Python {
   foreach ($p in $paths) {
     if (Test-Path $p) { return $p }
   }
+  $hermesPy = Get-ChildItem "$env:LOCALAPPDATA\hermes\tools\python-*\python.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+  if ($hermesPy) { return $hermesPy.FullName }
   return $null
 }
 

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Register Chrome Native Messaging host (Windows) so Hermes Chrome can auto-start the bridge.
@@ -45,6 +45,8 @@ function Find-Python {
     )) {
     if (Test-Path $p) { return $p }
   }
+  $hermesPy = Get-ChildItem "$env:LOCALAPPDATA\hermes\tools\python-*\python.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+  if ($hermesPy) { return $hermesPy.FullName }
   return $null
 }
 
