@@ -115,7 +115,7 @@ Packaging notes: [PACKAGING.md](./PACKAGING.md)
 
 ### 2. Install / enable the extension
 
-- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **or** Load unpacked → `extension/` (v1.8.9)
+- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **or** Load unpacked → `extension/` (v1.8.10)
 - Accept **nativeMessaging** if prompted
 - **Reload** the extension → **click the icon once** (opens Side Panel)
 - Wait for auto-pair, or press **Pair** in the Side Panel banner or Extension Options

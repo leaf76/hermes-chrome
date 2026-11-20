@@ -363,7 +363,7 @@ def follow_redirects(url: str, *, max_redirects: int = MAX_REDIRECTS) -> dict[st
                 current,
                 method=method,
                 headers={
-                    "User-Agent": "hermes-chrome-check-url/1.8.9 (+local; no cloud)",
+                    "User-Agent": "hermes-chrome-check-url/1.8.10 (+local; no cloud)",
                     "Accept": "*/*",
                 },
             )

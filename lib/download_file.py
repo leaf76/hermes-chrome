@@ -188,7 +188,7 @@ def download_direct(
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "hermes-chrome-download/1.8.9 (+local)",
+            "User-Agent": "hermes-chrome-download/1.8.10 (+local)",
             "Accept": "*/*",
         },
         method="GET",

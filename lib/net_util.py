@@ -223,7 +223,7 @@ def urllib_open(url: str, *, timeout: float = 30, method: str = "GET"):
         url,
         method=method,
         headers={
-            "User-Agent": "hermes-chrome/1.8.9 (+local)",
+            "User-Agent": "hermes-chrome/1.8.10 (+local)",
             "Accept": "*/*",
         },
     )

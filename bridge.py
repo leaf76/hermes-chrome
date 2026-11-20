@@ -35,6 +35,7 @@ import re
 import secrets
 import shutil
 import socket
+import socketserver
 import sqlite3
 import subprocess
 import sys
@@ -841,7 +842,12 @@ class _BridgeServer(ThreadingHTTPServer):
     def server_bind(self) -> None:
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        # Skip HTTPServer.server_bind()'s socket.getfqdn(host) reverse DNS lookup,
+        # which can stall ~35s on macOS runners and offline hosts.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host or "127.0.0.1"
+        self.server_port = port
 
 
 class Handler(BaseHTTPRequestHandler):

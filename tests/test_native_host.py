@@ -31,7 +31,10 @@ class NativeHostTests(unittest.TestCase):
         fake_out = _FakeStdStream()
 
         with mock.patch("sys.stdin", fake_in), mock.patch("sys.stdout", fake_out):
-            with mock.patch.object(nh, "health", return_value={"ok": False}):
+            with (
+                mock.patch.object(nh, "ensure_and_pair", return_value={"ok": False}),
+                mock.patch.object(nh, "health", return_value={"ok": False}),
+            ):
                 rc = nh.main()
 
         self.assertEqual(rc, 0)
@@ -51,7 +54,8 @@ class NativeHostTests(unittest.TestCase):
             self.assertIsNone(nh.read_message())
         fake_in2 = _FakeStdStream(b"\x04\x00")
         with mock.patch("sys.stdin", fake_in2), mock.patch("sys.stdout", fake_out):
-            self.assertEqual(nh.main(), 0)
+            with mock.patch.object(nh, "ensure_and_pair", return_value={"ok": False}):
+                self.assertEqual(nh.main(), 0)
         self.assertEqual(fake_out.buffer.getvalue(), b"")
 
 
