@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXT="$ROOT/extension"
 DIST="$ROOT/store/dist"
-VER=$(python3 -c "import json;print(json.load(open('$EXT/manifest.json'))['version'])")
+VER=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$EXT/manifest.json")
 NAME="hermes-chrome-v${VER}"
 OUT="$DIST/${NAME}.zip"
 mkdir -p "$DIST"
@@ -22,9 +22,9 @@ rm -f "$OUT"
 )
 echo "Wrote $OUT"
 unzip -l "$OUT"
-python3 - <<PY
-import json, zipfile
-z=zipfile.ZipFile("$OUT")
+python3 - "$OUT" <<'PY'
+import json, sys, zipfile
+z=zipfile.ZipFile(sys.argv[1])
 names=set(z.namelist())
 need=[
     "manifest.json",
@@ -36,6 +36,7 @@ need=[
     "sidepanel.js",
     "sidepanel.css",
     "options.html",
+    "options.js",
     "help.html",
     "help.js",
     "icons/icon128.png",

@@ -23,43 +23,27 @@ mkdir -p "$RUN_DIR" "$(dirname "$PLIST_DST")"
 
 render_plist() {
   local out="$1"
-  local token_xml=""
-  # Optional token from bridge.env
-  if [[ -f "${RUN_DIR}/bridge.env" ]]; then
-    # shellcheck disable=SC1091
-    set -a
-    # shellcheck source=/dev/null
-    source "${RUN_DIR}/bridge.env"
-    set +a
-  fi
-  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
-    token_xml="    <key>HERMES_CHROME_BRIDGE_TOKEN</key>
-    <string>${HERMES_CHROME_BRIDGE_TOKEN}</string>"
-  fi
-  sed \
-    -e "s|__PYTHON3__|${PYTHON3}|g" \
-    -e "s|__BRIDGE_PY__|${BRIDGE_PY}|g" \
-    -e "s|__RUN_DIR__|${RUN_DIR}|g" \
-    -e "s|__HOME__|${HOME}|g" \
-    -e "s|__ROOT__|${ROOT}|g" \
-    "$PLIST_SRC" >"$out"
-  if [[ -n "$token_xml" ]]; then
-    # Insert token env before closing </dict> of EnvironmentVariables
-    python3 - <<'PY' "$out" "$token_xml"
-from pathlib import Path
+  # Render plist with XML-escaped substitutions; bridge.py reads bridge.env directly (never bake tokens into plist).
+  "$PYTHON3" - "$PLIST_SRC" "$out" "$PYTHON3" "$BRIDGE_PY" "$RUN_DIR" "$HOME" "$ROOT" <<'PY'
+import os
 import sys
-path, token_xml = Path(sys.argv[1]), sys.argv[2]
-text = path.read_text()
-needle = "    <key>PATH</key>"
-if needle in text and "HERMES_CHROME_BRIDGE_TOKEN" not in text:
-    text = text.replace(
-        needle,
-        token_xml + "\n" + needle,
-        1,
-    )
-    path.write_text(text)
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+src, dst, py3, bridge_py, run_dir, home_dir, root_dir = sys.argv[1:8]
+text = Path(src).read_text(encoding="utf-8")
+subs = {
+    "__PYTHON3__": escape(py3),
+    "__BRIDGE_PY__": escape(bridge_py),
+    "__RUN_DIR__": escape(run_dir),
+    "__HOME__": escape(home_dir),
+    "__ROOT__": escape(root_dir),
+}
+for k, v in subs.items():
+    text = text.replace(k, v)
+Path(dst).write_text(text, encoding="utf-8")
+os.chmod(dst, 0o600)
 PY
-  fi
 }
 
 cmd_install() {

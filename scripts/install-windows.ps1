@@ -25,13 +25,18 @@
 #>
 param(
   [switch]$SkipGrok,
-  [switch]$Uninstall
+  [switch]$Uninstall,
+  [switch]$Dev
 )
 
 $ErrorActionPreference = "Stop"
-$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$BridgePy = Join-Path $Root "bridge.py"
-$McpPy = Join-Path $Root "mcp_server.py"
+$ScriptRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..") -ErrorAction SilentlyContinue).Path
+$DefaultRoot = Join-Path $env:USERPROFILE ".hermes\hermes-chrome"
+if ($ScriptRepoRoot -and (Test-Path (Join-Path $ScriptRepoRoot "bridge.py"))) {
+  $Root = $ScriptRepoRoot
+} else {
+  $Root = $DefaultRoot
+}
 $RunDir = Join-Path $env:USERPROFILE ".hermes\run\hermes-chrome"
 $EnvFile = Join-Path $RunDir "bridge.env"
 $TaskName = "HermesChromeBridge"
@@ -40,32 +45,72 @@ $GrokConfig = Join-Path $env:USERPROFILE ".grok\config.toml"
 function Write-Info($msg) { Write-Host "[hermes-chrome] $msg" }
 function Die($msg) { Write-Error $msg; exit 1 }
 
+function Ensure-RepoTree {
+  if (Test-Path (Join-Path $Root "bridge.py")) {
+    return
+  }
+  if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Die "git is required to install Hermes Chrome companion into $Root"
+  }
+  $parent = Split-Path -Parent $Root
+  if (-not (Test-Path $parent)) {
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  }
+  if (Test-Path (Join-Path $Root ".git")) {
+    Write-Info "updating existing checkout in $Root…"
+    & git -C $Root pull --ff-only
+  } else {
+    Write-Info "cloning Hermes Chrome companion into $Root…"
+    & git clone --depth 1 https://github.com/leaf76/hermes-chrome.git $Root
+  }
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $Root "bridge.py"))) {
+    Die "failed to populate $Root from GitHub"
+  }
+}
+
+function Test-Python39([string]$Exe) {
+  if (-not $Exe -or ($Exe -match 'WindowsApps') -or -not (Test-Path $Exe)) { return $false }
+  try {
+    & $Exe -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" 2>$null
+    return ($LASTEXITCODE -eq 0)
+  } catch {
+    return $false
+  }
+}
+
 function Find-Python {
-  $candidates = @()
   if (Get-Command py -ErrorAction SilentlyContinue) {
     try {
       $p = & py -3 -c "import sys; print(sys.executable)" 2>$null
-      if ($p -and ($p -notmatch 'WindowsApps')) { return $p.Trim() }
+      if ($p) {
+        $p = $p.Trim()
+        if (Test-Python39 $p) { return $p }
+      }
     } catch {}
   }
   foreach ($name in @("python", "python3")) {
     $cmd = Get-Command $name -ErrorAction SilentlyContinue
-    if ($cmd -and $cmd.Source -and ($cmd.Source -notmatch 'WindowsApps')) {
+    if ($cmd -and $cmd.Source -and (Test-Python39 $cmd.Source)) {
       return $cmd.Source
     }
   }
   $paths = @(
+    "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
     "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
     "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
-    "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python39\python.exe",
+    "C:\Python314\python.exe",
+    "C:\Python313\python.exe",
     "C:\Python312\python.exe",
     "C:\Python311\python.exe"
   )
   foreach ($p in $paths) {
-    if (Test-Path $p) { return $p }
+    if (Test-Python39 $p) { return $p }
   }
   $hermesPy = Get-ChildItem "$env:LOCALAPPDATA\hermes\tools\python-*\python.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
-  if ($hermesPy) { return $hermesPy.FullName }
+  if ($hermesPy -and (Test-Python39 $hermesPy.FullName)) { return $hermesPy.FullName }
   return $null
 }
 
@@ -73,12 +118,15 @@ function Ensure-Token {
   New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
   if (Test-Path $EnvFile) { return }
   $bytes = New-Object byte[] 32
-  [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($bytes)
+  } finally {
+    $rng.Dispose()
+  }
   $token = [Convert]::ToBase64String($bytes).TrimEnd('=') -replace '\+', '-' -replace '/', '_'
-  @"
-# Hermes Chrome bridge auth (local only). Auto-managed; do not commit.
-export HERMES_CHROME_BRIDGE_TOKEN='$token'
-"@ | Set-Content -Path $EnvFile -Encoding UTF8
+  $content = "# Hermes Chrome bridge auth (local only). Auto-managed; do not commit.`r`nexport HERMES_CHROME_BRIDGE_TOKEN='$token'`r`n"
+  [System.IO.File]::WriteAllText($EnvFile, $content, (New-Object System.Text.UTF8Encoding($false)))
   Write-Info "wrote token: $EnvFile"
 }
 
@@ -99,7 +147,8 @@ function Install-Task([string]$PythonExe) {
     -RestartCount 5 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
-  $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+  $userId = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+  $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
   Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $action `
@@ -111,7 +160,6 @@ function Install-Task([string]$PythonExe) {
 }
 
 function Start-BridgeNow([string]$PythonExe) {
-  # Kill anything already on 19876? leave alone if healthy.
   try {
     $h = Invoke-WebRequest -Uri "http://127.0.0.1:19876/v1/health" -UseBasicParsing -TimeoutSec 2
     if ($h.StatusCode -eq 200) {
@@ -120,19 +168,28 @@ function Start-BridgeNow([string]$PythonExe) {
     }
   } catch {}
 
-  $log = Join-Path $RunDir "bridge.windows.log"
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $PythonExe
-  $psi.Arguments = "`"$BridgePy`""
-  $psi.WorkingDirectory = $Root
-  $psi.UseShellExecute = $false
-  $psi.CreateNoWindow = $true
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.Environment["HERMES_CHROME_RUN"] = $RunDir
-  $p = [System.Diagnostics.Process]::Start($psi)
+  $log = Join-Path $RunDir "bridge.windows.out.log"
+  $errLog = Join-Path $RunDir "bridge.windows.err.log"
+  $prevRun = $env:HERMES_CHROME_RUN
+  $env:HERMES_CHROME_RUN = $RunDir
+  try {
+    $p = Start-Process `
+      -FilePath $PythonExe `
+      -ArgumentList "`"$BridgePy`"" `
+      -WorkingDirectory $Root `
+      -WindowStyle Hidden `
+      -RedirectStandardOutput $log `
+      -RedirectStandardError $errLog `
+      -PassThru
+  } finally {
+    if ($null -eq $prevRun) {
+      Remove-Item Env:\HERMES_CHROME_RUN -ErrorAction SilentlyContinue
+    } else {
+      $env:HERMES_CHROME_RUN = $prevRun
+    }
+  }
   if ($p) {
-    Set-Content -Path (Join-Path $RunDir "bridge.pid") -Value $p.Id -Encoding ascii
+    [System.IO.File]::WriteAllText((Join-Path $RunDir "bridge.pid"), "$($p.Id)", (New-Object System.Text.UTF8Encoding($false)))
   }
   for ($i = 0; $i -lt 40; $i++) {
     try {
@@ -144,7 +201,7 @@ function Start-BridgeNow([string]$PythonExe) {
     } catch {}
     Start-Sleep -Milliseconds 150
   }
-  Die "bridge failed to become healthy — see Python console / $log"
+  Die "bridge failed to become healthy — see $errLog / $log"
 }
 
 function Open-Pairing {
@@ -167,12 +224,12 @@ function Open-Pairing {
 }
 
 function Install-McpAll([string]$PythonExe) {
-  $installer = Join-Path $PSScriptRoot "install-mcp.py"
+  $installer = Join-Path $Root "scripts\install-mcp.py"
   if (-not (Test-Path $installer)) {
     Write-Info "skip MCP (missing install-mcp.py)"
     return
   }
-  Write-Info "registering MCP (Grok / Cursor / Claude Desktop when present)…"
+  Write-Info "registering MCP (Grok / Cursor / Claude Desktop / VS Code when present)…"
   & $PythonExe $installer --root $Root --python $PythonExe
   if ($LASTEXITCODE -ne 0) {
     Write-Info "MCP registration returned $LASTEXITCODE (partial ok)"
@@ -180,20 +237,45 @@ function Install-McpAll([string]$PythonExe) {
 }
 
 # ---- main ----
-if (-not (Test-Path $BridgePy)) { Die "missing $BridgePy" }
-if (-not (Test-Path $McpPy)) { Die "missing $McpPy" }
-
 if ($Uninstall) {
   Uninstall-Task
-  Write-Info "bridge process not killed (stop manually if needed)"
-  Write-Info "Grok MCP entry left in place; remove [mcp_servers.hermes-chrome] from config.toml if desired"
+  $nm = Join-Path $Root "scripts\install-native-host.ps1"
+  if (-not (Test-Path $nm) -and $PSScriptRoot) {
+    $nm = Join-Path $PSScriptRoot "install-native-host.ps1"
+  }
+  if (Test-Path $nm) {
+    & powershell -ExecutionPolicy Bypass -File $nm -Uninstall
+  }
+  $pyUn = Find-Python
+  $mcpInstaller = Join-Path $Root "scripts\install-mcp.py"
+  if ($pyUn -and (Test-Path $mcpInstaller)) {
+    & $pyUn $mcpInstaller --uninstall
+  }
+  $pidFile = Join-Path $RunDir "bridge.pid"
+  if (Test-Path $pidFile) {
+    $pidText = (Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($pidText -and ($pidText.Trim() -match '^\d+$')) {
+      Stop-Process -Id ([int]$pidText.Trim()) -Force -ErrorAction SilentlyContinue
+      Write-Info "stopped bridge process $($pidText.Trim())"
+    }
+    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+  }
+  $autoOn = Join-Path $RunDir "auto-update.on"
+  if (Test-Path $autoOn) { Remove-Item $autoOn -Force -ErrorAction SilentlyContinue }
+  Write-Info "uninstall complete (bridge.env token preserved at $EnvFile)"
   exit 0
 }
+
+Ensure-RepoTree
+$BridgePy = Join-Path $Root "bridge.py"
+$McpPy = Join-Path $Root "mcp_server.py"
+if (-not (Test-Path $BridgePy)) { Die "missing $BridgePy" }
+if (-not (Test-Path $McpPy)) { Die "missing $McpPy" }
 
 $py = Find-Python
 if (-not $py) {
   Die @"
-No real Python 3 found (Windows Store stub does not count).
+No real Python 3.9+ found (Windows Store stub does not count).
 
 Install Python 3.11+ from https://www.python.org/downloads/
   - check 'Add python.exe to PATH'
@@ -210,7 +292,7 @@ Start-BridgeNow -PythonExe $py
 Open-Pairing
 
 # Native Messaging — extension can auto-start bridge on click/reload
-$nm = Join-Path $PSScriptRoot "install-native-host.ps1"
+$nm = Join-Path $Root "scripts\install-native-host.ps1"
 if (Test-Path $nm) {
   Write-Info "installing Chrome Native Messaging host…"
   & powershell -ExecutionPolicy Bypass -File $nm
@@ -220,16 +302,18 @@ if (Test-Path $nm) {
 
 if (-not $SkipGrok) { Install-McpAll -PythonExe $py }
 
-$doctor = Join-Path $PSScriptRoot "doctor.py"
+$doctor = Join-Path $Root "scripts\doctor.py"
 if (Test-Path $doctor) {
   Write-Info "running doctor…"
   & $py $doctor
 }
 
 $upd = Join-Path $Root "lib\self_update.py"
-if (Test-Path $upd) {
-  Write-Info "enabling companion auto-update (git ff-only; disable: hermes-chrome self-update disable)"
+if (-not $Dev -and (Test-Path $upd) -and (Test-Path (Join-Path $Root ".git"))) {
+  Write-Info "enabling companion auto-update (git ff-only; disable: lib\self_update.py disable)"
   & $py $upd enable
+} else {
+  Write-Info "skipping auto-update (-Dev or non-git install)"
 }
 
 Write-Host ""

@@ -134,7 +134,7 @@ ensure_source_tree() {
       rm -rf "${INSTALL_ROOT}.tmp"
       mkdir -p "${INSTALL_ROOT}.tmp"
       tar -C "$LOCAL_ROOT" \
-        --exclude '__pycache__' --exclude 'store/dist' \
+        --exclude '__pycache__' --exclude '*.pyc' --exclude 'store/dist' --exclude 'store/submission-pack' \
         -cf - . | tar -C "${INSTALL_ROOT}.tmp" -xf -
       rm -rf "$INSTALL_ROOT"
       mv "${INSTALL_ROOT}.tmp" "$INSTALL_ROOT"
@@ -142,15 +142,18 @@ ensure_source_tree() {
     return 0
   fi
 
-  # curl | bash path: clone or pull
+  # curl | bash path: clone or pull (never reset --hard on a dirty checkout)
   if [[ -d "${INSTALL_ROOT}/.git" ]]; then
     log "updating existing install: $INSTALL_ROOT"
-    git -C "$INSTALL_ROOT" fetch --depth 1 origin main 2>/dev/null \
-      || git -C "$INSTALL_ROOT" fetch --depth 1 origin master 2>/dev/null \
-      || true
-    git -C "$INSTALL_ROOT" reset --hard origin/main 2>/dev/null \
-      || git -C "$INSTALL_ROOT" pull --ff-only 2>/dev/null \
-      || log "git update skipped (offline?); using existing tree"
+    if [[ -n "$(git -C "$INSTALL_ROOT" status --porcelain 2>/dev/null || true)" ]]; then
+      log "git tree is dirty — skipping update to preserve local changes"
+    else
+      git -C "$INSTALL_ROOT" fetch --depth 1 origin main 2>/dev/null \
+        || git -C "$INSTALL_ROOT" fetch --depth 1 origin master 2>/dev/null \
+        || true
+      git -C "$INSTALL_ROOT" pull --ff-only 2>/dev/null \
+        || log "git update skipped (offline?); using existing tree"
+    fi
   else
     log "cloning $REPO_URL → $INSTALL_ROOT"
     rm -rf "$INSTALL_ROOT"
@@ -221,10 +224,8 @@ printf '%s\n' "$INSTALL_ROOT" >"${RUN_DIR}/install-root.txt"
 install_path_shim
 
 log "running install-for-agent (bridge + native host)…"
-agent_args=()
-[[ "$SKIP_MCP" == "1" ]] && agent_args+=(--skip-mcp)
 # Always skip old grok-only path; we run install-mcp.py after for multi-client
-agent_args+=(--skip-mcp)
+agent_args=(--skip-mcp)
 bash "${INSTALL_ROOT}/scripts/install-for-agent.sh" "${agent_args[@]}"
 
 if [[ "$SKIP_MCP" != "1" ]]; then

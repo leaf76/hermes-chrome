@@ -65,12 +65,15 @@ jobs:
 
       - name: Resolve version
         id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          if [[ "${EVENT_NAME}" == "push" ]]; then
             TAG="${GITHUB_REF_NAME}"
           else
-            TAG="${{ inputs.tag }}"
+            TAG="${INPUT_TAG}"
           fi
           MANIFEST_VER="$(python3 -c "import json; print(json.load(open('extension/manifest.json'))['version'])")"
           if [[ -n "$TAG" ]]; then
@@ -83,29 +86,32 @@ jobs:
           echo "version=$VER" >>"$GITHUB_OUTPUT"
           echo "manifest=$MANIFEST_VER" >>"$GITHUB_OUTPUT"
           echo "Resolved tag=$TAG version=$VER manifest=$MANIFEST_VER"
-          if [[ -n "${{ github.event_name }}" && "${{ github.event_name }}" == "push" && "$VER" != "$MANIFEST_VER" ]]; then
+          if [[ "${EVENT_NAME}" == "push" && "$VER" != "$MANIFEST_VER" ]]; then
             echo "::error::Tag version ($VER) != manifest.json ($MANIFEST_VER). Bump manifest or retag."
             exit 1
           fi
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" && "$VER" != "$MANIFEST_VER" ]]; then
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_TAG}" && "$VER" != "$MANIFEST_VER" ]]; then
             echo "::error::Requested tag ($VER) != manifest.json ($MANIFEST_VER)."
             exit 1
           fi
 
       - name: Build release assets
+        env:
+          REL_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
           chmod +x scripts/packaging/build-release-assets.sh scripts/install.sh store/package.sh || true
-          ./scripts/packaging/build-release-assets.sh --version "${{ steps.ver.outputs.version }}"
+          ./scripts/packaging/build-release-assets.sh --version "${REL_VERSION}"
 
       - name: Build macOS .pkg (unsigned by default)
         env:
+          REL_VERSION: ${{ steps.ver.outputs.version }}
           HERMES_CHROME_SIGN_IDENTITY: ${{ secrets.HERMES_CHROME_SIGN_IDENTITY }}
           HERMES_CHROME_NOTARY_PROFILE: ${{ secrets.HERMES_CHROME_NOTARY_PROFILE }}
         run: |
           set -euo pipefail
           chmod +x scripts/packaging/build-macos-pkg.sh || true
-          ./scripts/packaging/build-macos-pkg.sh --version "${{ steps.ver.outputs.version }}"
+          ./scripts/packaging/build-macos-pkg.sh --version "${REL_VERSION}"
           # Copy pkg into release dir if produced
           PKG="$(ls -1 dist/pkg/hermes-chrome-*.pkg 2>/dev/null | head -1 || true)"
           if [[ -n "$PKG" && -f "$PKG" ]]; then

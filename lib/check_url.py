@@ -21,13 +21,21 @@ _LIB = Path(__file__).resolve().parent
 if str(_LIB) not in sys.path:
     sys.path.insert(0, str(_LIB))
 
-from net_util import curl_available, curl_head_chain, ssl_context  # noqa: E402
-from policy import check_host_policy  # noqa: E402
+from net_util import curl_available, curl_head_single, ssl_context  # noqa: E402
+from policy import (  # noqa: E402
+    _host_is_ip,
+    _host_is_private,
+    check_host_policy,
+    load_policy,
+    resolve_host_ips_private,
+)
 
 # Default limits
 MAX_URL_LEN = 2048
 MAX_REDIRECTS = 8
 REQUEST_TIMEOUT_S = 8.0
+
+ALLOWED_SCHEMES = {"http", "https"}
 
 BLOCKED_SCHEMES = {
     "javascript",
@@ -39,10 +47,16 @@ BLOCKED_SCHEMES = {
     "chrome-extension",
     "about",
     "view-source",
+    "gopher",
+    "dict",
+    "ldap",
+    "ldaps",
+    "smb",
+    "ftp",
 }
 
 # Not blocked hard, but high risk for agent auto-open
-WARN_SCHEMES = {"http", "ftp", "ws"}
+WARN_SCHEMES = {"http", "ws"}
 
 SUSPICIOUS_TLDS = {
     "zip",
@@ -138,7 +152,7 @@ def inspect_url_static(url: str) -> dict[str, Any]:
             "findings": findings,
         }
 
-    if scheme in BLOCKED_SCHEMES:
+    if scheme in BLOCKED_SCHEMES or scheme not in {"http", "https"}:
         findings.append(
             _finding(
                 "block",
@@ -154,18 +168,16 @@ def inspect_url_static(url: str) -> dict[str, Any]:
                 f"Scheme '{scheme}' is not encrypted",
             )
         )
-    elif scheme not in {"https", "http"}:
-        findings.append(
-            _finding(
-                "warn",
-                "unusual_scheme",
-                f"Unusual scheme '{scheme}'",
-            )
-        )
 
     host = (parsed.hostname or "").lower()
     if not host and scheme in {"http", "https"}:
         findings.append(_finding("block", "no_host", "URL has no hostname"))
+
+    parsed_port: int | None = None
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        findings.append(_finding("block", "invalid_port", "URL has an invalid port"))
 
     if parsed.username or parsed.password:
         findings.append(
@@ -176,7 +188,7 @@ def inspect_url_static(url: str) -> dict[str, Any]:
             )
         )
 
-    if host in LOCAL_HOSTS or (host and _host_is_private_ip(host)):
+    if host in LOCAL_HOSTS or (host and _host_is_private(host)):
         findings.append(
             _finding(
                 "warn",
@@ -243,7 +255,7 @@ def inspect_url_static(url: str) -> dict[str, Any]:
         "parsed": {
             "scheme": scheme,
             "host": host,
-            "port": parsed.port,
+            "port": parsed_port,
             "path": path,
             "query": parsed.query,
         },
@@ -262,184 +274,175 @@ def _risk_from_findings(findings: list[dict[str, Any]]) -> str:
     return "low"
 
 
+def _validate_hop(url: str, policy: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
+    """Static + host policy + DNS resolution check BEFORE sending a network request."""
+    static = inspect_url_static(url)
+    findings = list(static.get("findings") or [])
+    pol = check_host_policy(url, policy=policy)
+    if pol.get("findings"):
+        findings.extend(pol["findings"])
+    host = (static.get("parsed") or {}).get("host") or ""
+    if host and policy.get("block_private_hosts", True) and resolve_host_ips_private(host):
+        findings.append(
+            _finding(
+                "block",
+                "dns_private_ip",
+                f"Hostname '{host}' resolves to a private/loopback/non-global IP",
+            )
+        )
+    ok = static["ok"] and pol.get("ok", True) and not any(f["level"] == "block" for f in findings)
+    return ok, findings
+
+
 def follow_redirects(url: str, *, max_redirects: int = MAX_REDIRECTS) -> dict[str, Any]:
-    """Follow redirects with HEAD (prefer curl/system certs). Local only."""
-    static0 = inspect_url_static(url)
-    if not static0["ok"]:
-        return {
-            "ok": False,
-            "risk": static0["risk"],
-            "url": url,
-            "final_url": url,
-            "redirects": 0,
-            "chain": [],
-            "findings": static0["findings"],
-            "error": "blocked_before_request",
-        }
-
-    # Prefer curl — uses macOS/system CA store (python.org builds often lack certs).
-    if curl_available():
-        try:
-            meta = curl_head_chain(url, max_redirs=max_redirects, timeout_s=REQUEST_TIMEOUT_S)
-            final = meta.get("final_url") or url
-            static_final = inspect_url_static(final)
-            findings = list(static_final["findings"])
-            prev_s = urllib.parse.urlparse(url).scheme
-            next_s = urllib.parse.urlparse(final).scheme
-            if prev_s == "https" and next_s == "http":
-                findings.append(
-                    _finding(
-                        "warn",
-                        "https_to_http",
-                        f"Redirect downgrades HTTPS → HTTP: {final}",
-                    )
-                )
-            redirs = int(meta.get("redirects") or 0)
-            if redirs > 4:
-                findings.append(
-                    _finding(
-                        "warn",
-                        "long_redirect_chain",
-                        f"Long redirect chain ({redirs} hops)",
-                    )
-                )
-            status = meta.get("status")
-            if status and int(status) >= 400:
-                findings.append(
-                    _finding("warn", "http_error", f"HTTP {status} at {final}")
-                )
-            # Final URL must not be blocked
-            if not static_final["ok"]:
-                findings.append(
-                    _finding(
-                        "block",
-                        "redirect_to_blocked",
-                        f"Redirect target blocked: {final}",
-                    )
-                )
-            return {
-                "ok": not any(f["level"] == "block" for f in findings),
-                "risk": _risk_from_findings(findings),
-                "url": url,
-                "final_url": final,
-                "redirects": redirs,
-                "chain": [
-                    {
-                        "url": url,
-                        "status": status,
-                        "final_url": final,
-                        "mode": "curl_head",
-                    }
-                ],
-                "findings": findings,
-                "status": status,
-            }
-        except Exception as e:  # noqa: BLE001
-            # fall through to urllib
-            curl_err = str(e)
-    else:
-        curl_err = None
-
+    """Follow redirects hop-by-hop with HEAD, validating policy/DNS before each hop."""
+    policy = load_policy()
     chain: list[dict[str, Any]] = []
     current = url
     ctx = ssl_context()
+    use_curl = curl_available()
 
     for i in range(max_redirects + 1):
-        static = inspect_url_static(current)
-        if not static["ok"] and i == 0:
+        hop_ok, hop_findings = _validate_hop(current, policy)
+        if not hop_ok:
+            if i == 0:
+                return {
+                    "ok": False,
+                    "risk": _risk_from_findings(hop_findings),
+                    "url": url,
+                    "final_url": current,
+                    "redirects": 0,
+                    "chain": chain,
+                    "findings": hop_findings,
+                    "error": "blocked_before_request",
+                }
             return {
                 "ok": False,
-                "risk": static["risk"],
+                "risk": "high",
                 "url": url,
                 "final_url": current,
-                "redirects": 0,
+                "redirects": len(chain),
                 "chain": chain,
-                "findings": static["findings"],
-                "error": "blocked_before_request",
+                "findings": hop_findings
+                + [
+                    _finding(
+                        "block",
+                        "redirect_to_blocked",
+                        f"Redirect target blocked: {current}",
+                    )
+                ],
             }
 
-        req = urllib.request.Request(
-            current,
-            method="GET",
-            headers={
-                "User-Agent": "hermes-chrome-check-url/1.4 (+local; no cloud)",
-                "Accept": "*/*",
-            },
-        )
-        try:
-            opener = urllib.request.build_opener(
-                urllib.request.HTTPSHandler(context=ctx),
-                NoRedirectHandler(),
-            )
-            with opener.open(req, timeout=REQUEST_TIMEOUT_S) as resp:
-                status = getattr(resp, "status", None) or resp.getcode()
-                headers = {k.lower(): v for k, v in resp.headers.items()}
+        status: int | None = None
+        loc: str | None = None
+        ctype: str | None = None
+        curl_err: str | None = None
+
+        if use_curl:
+            try:
+                meta = curl_head_single(current, timeout_s=REQUEST_TIMEOUT_S)
+                status = meta.get("status")
+                loc = meta.get("location")
+                ctype = meta.get("content_type")
                 chain.append(
                     {
                         "url": current,
                         "status": status,
-                        "content_type": headers.get("content-type"),
-                        "content_length": headers.get("content-length"),
-                        "server": headers.get("server"),
+                        "location": loc,
+                        "content_type": ctype,
+                        "mode": "curl_head",
                     }
                 )
-                try:
-                    resp.read(0)
-                except Exception:
-                    pass
-                break
-        except urllib.error.HTTPError as e:
-            status = e.code
-            headers = {
-                k.lower(): v for k, v in (e.headers.items() if e.headers else [])
-            }
-            loc = headers.get("location")
-            chain.append(
-                {
-                    "url": current,
-                    "status": status,
-                    "location": loc,
-                    "content_type": headers.get("content-type"),
-                }
+            except Exception as e:  # noqa: BLE001
+                curl_err = str(e)
+                use_curl = False
+
+        if not use_curl:
+            method = "HEAD"
+            req = urllib.request.Request(
+                current,
+                method=method,
+                headers={
+                    "User-Agent": "hermes-chrome-check-url/1.8.9 (+local; no cloud)",
+                    "Accept": "*/*",
+                },
             )
-            if status in {301, 302, 303, 307, 308} and loc:
-                nxt = urllib.parse.urljoin(current, loc)
-                hop_static = inspect_url_static(nxt)
-                if not hop_static["ok"]:
-                    return {
-                        "ok": False,
-                        "risk": "high",
-                        "url": url,
-                        "final_url": nxt,
-                        "redirects": len(chain),
-                        "chain": chain,
-                        "findings": hop_static["findings"]
-                        + [
-                            _finding(
-                                "block",
-                                "redirect_to_blocked",
-                                f"Redirect target blocked: {nxt}",
-                            )
-                        ],
+            try:
+                opener = urllib.request.build_opener(
+                    urllib.request.HTTPSHandler(context=ctx),
+                    NoRedirectHandler(),
+                )
+                with opener.open(req, timeout=REQUEST_TIMEOUT_S) as resp:
+                    status = getattr(resp, "status", None) or resp.getcode()
+                    headers = {k.lower(): v for k, v in resp.headers.items()}
+                    ctype = headers.get("content-type")
+                    chain.append(
+                        {
+                            "url": current,
+                            "status": status,
+                            "content_type": ctype,
+                            "content_length": headers.get("content-length"),
+                            "server": headers.get("server"),
+                        }
+                    )
+                    try:
+                        resp.read(0)
+                    except Exception:
+                        pass
+            except urllib.error.HTTPError as e:
+                status = e.code
+                headers = {
+                    k.lower(): v for k, v in (e.headers.items() if e.headers else [])
+                }
+                loc = headers.get("location")
+                ctype = headers.get("content-type")
+                chain.append(
+                    {
+                        "url": current,
+                        "status": status,
+                        "location": loc,
+                        "content_type": ctype,
                     }
-                current = nxt
-                if i >= max_redirects:
-                    return {
-                        "ok": False,
-                        "risk": "high",
-                        "url": url,
-                        "final_url": current,
-                        "redirects": len(chain),
-                        "chain": chain,
-                        "findings": [
-                            _finding(
-                                "block",
-                                "too_many_redirects",
-                                f"Exceeded {max_redirects} redirects",
-                            )
-                        ],
-                    }
-                continue
+                )
+            except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError, OSError) as e:
+                static2 = inspect_url_static(url)
+                findings = list(static2["findings"])
+                msg = f"Request failed: {e}"
+                if curl_err:
+                    msg = f"curl failed ({curl_err}); urllib failed: {e}"
+                findings.append(_finding("warn", "network_error", msg))
+                return {
+                    "ok": static2["ok"],
+                    "risk": _risk_from_findings(findings),
+                    "url": url,
+                    "final_url": current,
+                    "redirects": max(0, len(chain) - 1),
+                    "chain": chain,
+                    "findings": findings,
+                    "error": str(e),
+                }
+
+        if status in {301, 302, 303, 307, 308} and loc:
+            if i >= max_redirects:
+                return {
+                    "ok": False,
+                    "risk": "high",
+                    "url": url,
+                    "final_url": current,
+                    "redirects": len(chain),
+                    "chain": chain,
+                    "findings": [
+                        _finding(
+                            "block",
+                            "too_many_redirects",
+                            f"Exceeded {max_redirects} redirects",
+                        )
+                    ],
+                }
+            current = urllib.parse.urljoin(current, loc)
+            continue
+
+        if status and int(status) >= 400:
             static2 = inspect_url_static(current)
             findings = list(static2["findings"])
             findings.append(
@@ -455,29 +458,13 @@ def follow_redirects(url: str, *, max_redirects: int = MAX_REDIRECTS) -> dict[st
                 "findings": findings,
                 "status": status,
             }
-        except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError) as e:
-            static2 = inspect_url_static(url)
-            findings = list(static2["findings"])
-            msg = f"Request failed: {e}"
-            if curl_err:
-                msg = f"curl failed ({curl_err}); urllib failed: {e}"
-            findings.append(_finding("warn", "network_error", msg))
-            return {
-                "ok": static2["ok"],
-                "risk": _risk_from_findings(findings),
-                "url": url,
-                "final_url": current,
-                "redirects": len(chain),
-                "chain": chain,
-                "findings": findings,
-                "error": str(e),
-            }
+        break
 
     static_final = inspect_url_static(current)
     findings = list(static_final["findings"])
     if chain:
-        first_s = urllib.parse.urlparse(url).scheme
-        last_s = urllib.parse.urlparse(current).scheme
+        first_s = urllib.parse.urlparse(url).scheme.lower()
+        last_s = urllib.parse.urlparse(current).scheme.lower()
         if first_s == "https" and last_s == "http":
             findings.append(
                 _finding("warn", "https_to_http", "Final hop is HTTP after HTTPS")

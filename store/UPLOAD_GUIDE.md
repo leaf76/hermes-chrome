@@ -3,8 +3,8 @@
 Package: `store/dist/` (run `./store/package.sh`)  
 **Submission pack (preferred):** `store/submission-pack/` — zip + FILL.md + assets + 送審檢查表.txt
 
-Current version: **1.8.7** → `hermes-chrome-v1.8.7.zip`
-(GitHub Release asset: `hermes-chrome-extension-v1.8.7.zip` — same package)
+Current version: **1.8.9** → `hermes-chrome-v1.8.9.zip`
+(GitHub Release asset: `hermes-chrome-extension-v1.8.9.zip` — same package)
 
 ## Before upload
 
@@ -15,7 +15,7 @@ Current version: **1.8.7** → `hermes-chrome-v1.8.7.zip`
 
 2. Reload unpacked extension from this repo’s `extension/` and smoke-test:
    ```bash
-   hermes-chrome --json bridge-status   # extension_connected + version 1.8.7
+   hermes-chrome --json bridge-status   # extension_connected + version 1.8.9
    hermes-chrome --json ping
    hermes-chrome stop                   # closes agent workspace only
    ```
@@ -28,8 +28,8 @@ Current version: **1.8.7** → `hermes-chrome-v1.8.7.zip`
 1. Open https://chrome.google.com/webstore/devconsole (login as the publisher account)
 2. Click existing **Hermes Chrome** item (or Create new item)
 3. **Package** → Upload new package:
-   - Local: `store/dist/hermes-chrome-v1.8.7.zip`
-   - Or download: https://github.com/leaf76/hermes-chrome/releases/download/v1.8.7/hermes-chrome-extension-v1.8.7.zip
+   - Local: `store/dist/hermes-chrome-v1.8.9.zip`
+   - Or download: https://github.com/leaf76/hermes-chrome/releases/download/v1.8.9/hermes-chrome-extension-v1.8.9.zip
 4. **Store listing**
    - Short description → from `listing-en.md` (≤132 chars)
    - Detailed description → full detailed block from `listing-en.md`
@@ -85,9 +85,10 @@ Repo: https://github.com/leaf76/hermes-chrome
 
 ```
 tabs, tabGroups — agent workspace Tab Group (open / list / stop workspace tabs).
-storage — local settings and pairing token (device only).
+storage — local settings, pairing token, and bounded session action history (device only).
 alarms — reconnect / ensure native host on an interval.
-scripting — eval / click / type on workspace tabs when requested by local CLI/agent.
+scripting — read_page / dom_query / eval / click / type / editor ops when requested by local CLI/agent, or Side Panel context extraction.
+sidePanel — display the Hermes Chrome Side Panel (Action Inspector, local Hermes chat, and Workspace Manager) beside user tabs.
 ```
 
 ### Single purpose
@@ -101,7 +102,7 @@ Requires a separately installed local bridge; this package is the browser half o
 ## Reviewer notes (paste)
 
 ```
-Hermes Chrome is a local agent companion (v1.8.7).
+Hermes Chrome is a local agent companion (v1.8.9).
 Two parts: this extension (browser half) + one-time local companion from GitHub
 (install.sh registers Native Messaging host com.leaf76.hermes_chrome + bridge).
 Extension alone cannot open a control port (Chrome security) — that is why
@@ -112,11 +113,11 @@ Host permissions: 127.0.0.1:19876 bridge + <all_urls> for optional local tab cap
 (any site the CLI requests; PNG stays on-device; not site-locked).
 No remote code, no analytics, no cloud account.
 1. curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
-2. Install/reload this extension, click icon, Pair if needed
+2. Install/reload this extension, click icon (opens Side Panel), Pair if needed
 3. CLI: hermes-chrome ping / open / list-tabs / capture / stop
 Repo: https://github.com/leaf76/hermes-chrome
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy
-Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.7
+Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.9
 ```
 
 ## Version bumps

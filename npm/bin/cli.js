@@ -105,13 +105,79 @@ function run(cmd, args, opts = {}) {
   return r.status ?? 1;
 }
 
-function download(url, dest) {
+function findWindowsPython() {
+  const probe = (cmd, args = []) => {
+    try {
+      const r = spawnSync(cmd, [...args, "-c", "import sys; print(sys.executable); raise SystemExit(0 if sys.version_info >= (3, 9) else 1)"], {
+        encoding: "utf8",
+      });
+      if (r.status === 0 && r.stdout) {
+        const exe = r.stdout.trim();
+        if (exe && !/WindowsApps/i.test(exe) && fs.existsSync(exe)) return exe;
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  };
+  const pyLauncher = probe("py", ["-3"]);
+  if (pyLauncher) return pyLauncher;
+  for (const name of ["python", "python3"]) {
+    const found = probe(name);
+    if (found) return found;
+  }
+  const localAppData = process.env.LOCALAPPDATA || "";
+  const fixed = [
+    path.join(localAppData, "Programs", "Python", "Python314", "python.exe"),
+    path.join(localAppData, "Programs", "Python", "Python313", "python.exe"),
+    path.join(localAppData, "Programs", "Python", "Python312", "python.exe"),
+    path.join(localAppData, "Programs", "Python", "Python311", "python.exe"),
+    path.join(localAppData, "Programs", "Python", "Python310", "python.exe"),
+    path.join(localAppData, "Programs", "Python", "Python39", "python.exe"),
+  ];
+  for (const p of fixed) {
+    if (fs.existsSync(p) && probe(p)) return p;
+  }
+  try {
+    const toolsDir = path.join(localAppData, "hermes", "tools");
+    if (fs.existsSync(toolsDir)) {
+      const entries = fs.readdirSync(toolsDir).filter((d) => d.startsWith("python-")).sort().reverse();
+      for (const d of entries) {
+        const candidate = path.join(toolsDir, d, "python.exe");
+        if (fs.existsSync(candidate) && probe(candidate)) return candidate;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function download(url, dest, redirects = 0) {
   return new Promise((resolve, reject) => {
-    const u = new URL(url);
+    if (redirects > 5) {
+      reject(new Error(`Too many redirects (>${redirects}) downloading ${url}`));
+      return;
+    }
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      reject(new Error(`Invalid URL: ${url}`));
+      return;
+    }
+    const h = u.hostname.toLowerCase();
+    const isLoopback = h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+    if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopback)) {
+      reject(new Error(`Refusing non-HTTPS download URL: ${u.protocol}//${u.hostname}`));
+      return;
+    }
     const lib = u.protocol === "http:" ? http : https;
     const req = lib.get(u, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        download(res.headers.location, dest).then(resolve, reject);
+        res.resume();
+        const nextUrl = new URL(res.headers.location, u).href;
+        download(nextUrl, dest, redirects + 1).then(resolve, reject);
         return;
       }
       if (res.statusCode !== 200) {
@@ -140,42 +206,79 @@ async function installUnix(flags) {
   }
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-chrome-"));
-  const script = path.join(tmp, "install.sh");
-  log(`downloading install.sh → ${script}`);
-  await download(RAW_INSTALL, script);
-  fs.chmodSync(script, 0o755);
-  const args = [script];
-  if (flags.skipMcp) args.push("--skip-mcp");
-  if (flags.uninstall) args.push("--uninstall");
-  if (flags.dev) args.push("--dev");
-  return run("bash", args);
+  try {
+    const script = path.join(tmp, "install.sh");
+    log(`downloading install.sh → ${script}`);
+    await download(RAW_INSTALL, script);
+    fs.chmodSync(script, 0o755);
+    const args = [script];
+    if (flags.skipMcp) args.push("--skip-mcp");
+    if (flags.uninstall) args.push("--uninstall");
+    if (flags.dev) args.push("--dev");
+    return run("bash", args);
+  } finally {
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      /* ignore cleanup */
+    }
+  }
 }
 
 async function installWindows(flags) {
   const local = flags.dev ? findLocalRoot() : null;
   let ps1;
-  if (local && fs.existsSync(path.join(local, "scripts", "install-windows.ps1"))) {
-    ps1 = path.join(local, "scripts", "install-windows.ps1");
-    log(`using local: ${ps1}`);
-  } else {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-chrome-"));
-    ps1 = path.join(tmp, "install-windows.ps1");
-    log(`downloading install-windows.ps1 → ${ps1}`);
-    await download(WIN_INSTALL_RAW, ps1);
+  let tmp = null;
+  try {
+    if (local && fs.existsSync(path.join(local, "scripts", "install-windows.ps1"))) {
+      ps1 = path.join(local, "scripts", "install-windows.ps1");
+      log(`using local: ${ps1}`);
+    } else {
+      tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-chrome-"));
+      ps1 = path.join(tmp, "install-windows.ps1");
+      log(`downloading install-windows.ps1 → ${ps1}`);
+      await download(WIN_INSTALL_RAW, ps1);
+    }
+    const args = [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      ps1,
+    ];
+    if (flags.dev) args.push("-Dev");
+    if (flags.skipMcp) args.push("-SkipGrok");
+    if (flags.uninstall) args.push("-Uninstall");
+    return run("powershell.exe", args);
+  } finally {
+    if (tmp) {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      } catch {
+        /* ignore cleanup */
+      }
+    }
   }
-  const args = [
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    ps1,
-  ];
-  if (flags.skipMcp) args.push("-SkipGrok");
-  if (flags.uninstall) args.push("-Uninstall");
-  return run("powershell.exe", args);
 }
 
 function doctor() {
+  if (process.platform === "win32") {
+    const localRoot = findLocalRoot();
+    const docCandidates = [
+      path.join(os.homedir(), ".hermes", "hermes-chrome", "scripts", "doctor.py"),
+      localRoot ? path.join(localRoot, "scripts", "doctor.py") : null,
+    ].filter(Boolean);
+    const docPy = docCandidates.find((p) => fs.existsSync(p));
+    if (docPy) {
+      const py = findWindowsPython();
+      if (!py) {
+        log("Python 3.9+ not found (Windows Store stub does not count).");
+        return 1;
+      }
+      return run(py, [docPy]);
+    }
+  }
+
   const candidates = [
     path.join(os.homedir(), ".local", "bin", "hermes-chrome"),
     which("hermes-chrome"),

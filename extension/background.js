@@ -31,8 +31,16 @@ let pollGeneration = 0;
 let lastAuthErrorAt = 0;
 let lastAutoPairAt = 0;
 let autoPairFailStreak = 0;
+let bridgeAuthDisabled = false;
+/** @type {AbortController | null} */
+let activePollAbort = null;
+let groupEnsureQueue = Promise.resolve();
+let actionStorageQueue = Promise.resolve();
+let captureQueue = Promise.resolve();
+let lastCaptureAt = 0;
 const AUTO_PAIR_MIN_INTERVAL_MS = 2500;
 const AUTO_PAIR_MAX_STREAK = 60; // ~2.5 min of attempts then slow down
+const CAPTURE_MIN_INTERVAL_MS = 550;
 
 /** @type {chrome.runtime.Port | null} */
 let nativePort = null;
@@ -60,6 +68,93 @@ if (chrome.action?.onClicked) {
     }
   });
 }
+if (chrome.commands?.onCommand) {
+  chrome.commands.onCommand.addListener(async (command, tab) => {
+    try {
+      if (
+        (command === "_execute_action" || command === "open_side_panel") &&
+        chrome.sidePanel?.open
+      ) {
+        let winId = tab?.windowId;
+        if (!winId) {
+          const win = await chrome.windows.getLastFocused();
+          winId = win?.id;
+        }
+        if (winId != null) {
+          await chrome.sidePanel.open({ windowId: winId });
+        }
+      }
+    } catch (err) {
+      console.warn("Command sidePanel.open failed:", err);
+    }
+  });
+}
+
+function assertLoopbackBridgeUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") {
+    throw new Error("bridgeUrl required");
+  }
+  let u;
+  try {
+    u = new URL(rawUrl.trim());
+  } catch {
+    throw new Error("bridgeUrl is not a valid URL");
+  }
+  if (u.protocol !== "http:") {
+    throw new Error(`bridgeUrl must be http:// loopback; got ${u.protocol}`);
+  }
+  if (u.username || u.password) {
+    throw new Error("bridgeUrl must not include credentials");
+  }
+  const h = u.hostname.toLowerCase();
+  if (h !== "127.0.0.1" && h !== "localhost" && h !== "[::1]" && h !== "::1") {
+    throw new Error(`bridgeUrl must point to loopback (127.0.0.1, localhost, or [::1]); got ${h}`);
+  }
+  return u.origin;
+}
+
+function normalizeBridgeUrlOrDefault(rawUrl) {
+  try {
+    return assertLoopbackBridgeUrl(rawUrl || DEFAULT_BRIDGE);
+  } catch {
+    return DEFAULT_BRIDGE;
+  }
+}
+
+async function fetchWithTimeout(url, opts = {}, timeoutMs = 8000) {
+  const ctrl = new AbortController();
+  const ms = Math.max(500, Number(timeoutMs) || 8000);
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  const parentSignal = opts.signal;
+  const onParentAbort = () => ctrl.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      clearTimeout(timer);
+      ctrl.abort();
+    } else {
+      parentSignal.addEventListener("abort", onParentAbort, { once: true });
+    }
+  }
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+    if (parentSignal) {
+      parentSignal.removeEventListener("abort", onParentAbort);
+    }
+  }
+}
+
+function isTradingViewUrl(rawUrl) {
+  try {
+    const u = new URL(String(rawUrl || ""));
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    const h = u.hostname.toLowerCase().replace(/\.+$/, "");
+    return h === "tradingview.com" || h.endsWith(".tradingview.com");
+  } catch {
+    return false;
+  }
+}
 
 /** Only http(s) for agent navigation / open (block javascript:/file:/etc). */
 function assertHttpUrl(url, label = "url") {
@@ -79,11 +174,12 @@ function assertHttpUrl(url, label = "url") {
 }
 
 function isPrivateOrLocalHost(hostname) {
-  const h = String(hostname || "")
+  let h = String(hostname || "")
     .toLowerCase()
-    .replace(/^\[|\]$/g, "");
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "");
   if (!h) return true;
-  if (h === "localhost" || h === "0.0.0.0" || h.endsWith(".localhost")) {
+  if (h === "localhost" || h === "0.0.0.0" || h.endsWith(".localhost") || h === "metadata" || h === "metadata.google.internal" || h.endsWith(".internal")) {
     return true;
   }
   // IPv4
@@ -101,9 +197,21 @@ function isPrivateOrLocalHost(hostname) {
     if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // CGNAT
     return false;
   }
-  // IPv6 compressed forms we care about
-  if (h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")) {
-    return true;
+  // IPv6 forms (including IPv4-mapped ::ffff:a.b.c.d and hex ::ffff:7f00:1)
+  if (h.includes(":")) {
+    if (h === "::1" || h === "::") return true;
+    const mappedV4 = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+    if (mappedV4) return isPrivateOrLocalHost(mappedV4[1]);
+    const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (mappedHex) {
+      const hi = parseInt(mappedHex[1], 16);
+      const lo = parseInt(mappedHex[2], 16);
+      const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+      return isPrivateOrLocalHost(v4);
+    }
+    if (/^f[cd]/i.test(h) || /^fe[89ab][0-9a-f]?:/i.test(h)) {
+      return true;
+    }
   }
   return false;
 }
@@ -117,23 +225,19 @@ async function authHeaders(extra = {}) {
   return headers;
 }
 
-async function assertTabInWorkspace(tabId, cmd = {}) {
+async function assertTabInWorkspace(tabId, _cmd = {}) {
   const settings = await getSettings();
-  const allow =
-    cmd.allowCrossWorkspace === true ||
-    cmd.crossWorkspace === true ||
-    settings.allowCrossWorkspace === true;
-  if (allow) return;
+  if (settings.allowCrossWorkspace === true) return;
   const groupId = await getStoredGroupId();
   if (!(await groupStillExists(groupId))) {
     throw new Error(
-      "workspace group not running; start workspace first or set allowCrossWorkspace"
+      "workspace group not running; start workspace first or enable Allow cross-workspace ops in Extension Options"
     );
   }
   const tab = await chrome.tabs.get(Number(tabId));
   if (tab.groupId !== groupId) {
     throw new Error(
-      `tab ${tabId} is outside Hermes workspace (pass allowCrossWorkspace or enable in Options)`
+      `tab ${tabId} is outside Hermes workspace (enable Allow cross-workspace ops in Extension Options)`
     );
   }
 }
@@ -165,7 +269,7 @@ async function getSettings() {
   const r = await chrome.storage.local.get(SETTINGS_KEY);
   const s = r[SETTINGS_KEY] || {};
   return {
-    bridgeUrl: (s.bridgeUrl || DEFAULT_BRIDGE).replace(/\/$/, ""),
+    bridgeUrl: normalizeBridgeUrlOrDefault(s.bridgeUrl),
     bridgeToken: typeof s.bridgeToken === "string" ? s.bridgeToken : "",
     groupTitle: s.groupTitle || GROUP_TITLE,
     groupColor: s.groupColor || GROUP_COLOR,
@@ -257,7 +361,18 @@ function clampWindowSize(width, height) {
   return { width: w, height: h };
 }
 
-async function ensureGroup(
+function ensureGroup(
+  url,
+  { separateWindow = false, width, height, updateExisting = true } = {}
+) {
+  const run = () =>
+    ensureGroupUnlocked(url, { separateWindow, width, height, updateExisting });
+  const next = groupEnsureQueue.then(run, run);
+  groupEnsureQueue = next.catch(() => {});
+  return next;
+}
+
+async function ensureGroupUnlocked(
   url,
   { separateWindow = false, width, height, updateExisting = true } = {}
 ) {
@@ -335,6 +450,7 @@ async function ensureGroup(
   if (await groupStillExists(groupId)) {
     const tabs = await tabsInGroup(groupId);
     let targetWinId = tabs[0]?.windowId ?? null;
+    let createdTabId = null;
     if (url && updateExisting) {
       if (tabs.length > 0) {
         await chrome.tabs.update(tabs[0].id, { url: startUrl, active: false });
@@ -344,6 +460,7 @@ async function ensureGroup(
         const tab = await chrome.tabs.create(createOpts);
         await chrome.tabs.group({ tabIds: [tab.id], groupId });
         targetWinId = tab.windowId;
+        createdTabId = tab.id;
       }
     }
     await styleGroup(groupId);
@@ -352,7 +469,7 @@ async function ensureGroup(
       windowId: targetWinId,
       separateWindow: Boolean(agentWinId && targetWinId === agentWinId),
       created: false,
-      tabId: tabs[0]?.id ?? null,
+      tabId: tabs[0]?.id ?? createdTabId,
     };
   }
 
@@ -477,13 +594,15 @@ function ensureNativeCompanion(force = false) {
         }).catch(() => {});
       });
       nativePort.onDisconnect.addListener(() => {
-        const err = chrome.runtime.lastError?.message || "disconnected";
+        const runtimeErr = chrome.runtime.lastError?.message || "";
         // "Specified native messaging host not found" = companion not installed
-        nativeStatus = {
-          ok: false,
-          at: Date.now(),
-          error: err,
-        };
+        if (runtimeErr) {
+          nativeStatus = {
+            ok: false,
+            at: Date.now(),
+            error: runtimeErr,
+          };
+        }
         nativePort = null;
       });
     }
@@ -509,14 +628,19 @@ async function status() {
   let bridgeHealth = null;
   try {
     const headers = await authHeaders();
-    const res = await fetch(`${settings.bridgeUrl}/v1/health`, {
-      cache: "no-store",
-      headers,
-    });
+    const res = await fetchWithTimeout(
+      `${settings.bridgeUrl}/v1/health`,
+      {
+        cache: "no-store",
+        headers,
+      },
+      5000
+    );
     bridgeOk = res.ok;
     if (res.ok) {
       bridgeHealth = await res.json();
       bridgeAuth = !!bridgeHealth.auth;
+      bridgeAuthDisabled = bridgeHealth.auth === false;
       pairingOpen = !!bridgeHealth.pairing_open;
     }
   } catch {
@@ -608,7 +732,11 @@ async function stopGroup({ closeTabs = true } = {}) {
       }
     }
   } else if (tabs.length) {
-    await chrome.tabs.ungroup(tabs.map((t) => t.id));
+    try {
+      await chrome.tabs.ungroup(tabs.map((t) => t.id));
+    } catch {
+      /* ignore closed tabs */
+    }
   }
   await setStoredGroupId(null);
   await setStoredAgentWindowId(null);
@@ -649,7 +777,14 @@ function classifyTvTab(title, url) {
     else if (urlNQ && !urlGC) isNQ = true;
   }
   if (isMgc) isGC = false;
-  const isChart = /tradingview\.com\/chart/i.test(u);
+  let isChart = false;
+  if (isTradingViewUrl(u)) {
+    try {
+      isChart = new URL(u).pathname.toLowerCase().startsWith("/chart");
+    } catch {
+      isChart = false;
+    }
+  }
   return { isGC, isNQ, isChart, isMgc };
 }
 
@@ -661,7 +796,7 @@ async function findTradingViewTab(prefer) {
   let fallback = null;
   for (const t of tabs) {
     const { isGC, isNQ, isChart } = classifyTvTab(t.title, t.url);
-    if (!isChart && !(t.url || "").includes("tradingview.com")) continue;
+    if (!isChart && !isTradingViewUrl(t.url)) continue;
     if (!isChart && !isGC && !isNQ) continue;
     // Prefer title-matched product tabs first (avoid stale URL false GC/NQ)
     if (isGC && !gc) gc = t;
@@ -751,11 +886,12 @@ async function ensureTradingViewTimeframe(tabId, opts = {}) {
         };
 
         const clickTf = async (tf) => {
+          const tfEsc = CSS.escape(String(tf));
           // 1) Direct data-value button if already visible
           const direct = document.querySelector(
-            `#header-toolbar-intervals [data-value='${tf}'], ` +
-              `[data-name='time-interval-select'] [data-value='${tf}'], ` +
-              `button[data-value='${tf}']`
+            `#header-toolbar-intervals [data-value='${tfEsc}'], ` +
+              `[data-name='time-interval-select'] [data-value='${tfEsc}'], ` +
+              `button[data-value='${tfEsc}']`
           );
           if (direct) {
             direct.click();
@@ -789,7 +925,7 @@ async function ensureTradingViewTimeframe(tabId, opts = {}) {
           await sleep(250);
 
           const menuItem =
-            document.querySelector(`[data-value='${tf}']`) ||
+            document.querySelector(`[data-value='${tfEsc}']`) ||
             Array.from(
               document.querySelectorAll(
                 "[role='menuitem'], [role='option'], button, div[data-value]"
@@ -861,7 +997,24 @@ async function ensureTradingViewTimeframe(tabId, opts = {}) {
  *
  * Optional ensureTf: { preferred: "5", allowed: ["3","5"] } — TradingView helper only.
  */
-async function captureTab(cmd) {
+function captureTab(cmd) {
+  const run = async () => {
+    const gap = Date.now() - lastCaptureAt;
+    if (gap < CAPTURE_MIN_INTERVAL_MS) {
+      await new Promise((r) => setTimeout(r, CAPTURE_MIN_INTERVAL_MS - gap));
+    }
+    try {
+      return await captureTabUnlocked(cmd);
+    } finally {
+      lastCaptureAt = Date.now();
+    }
+  };
+  const next = captureQueue.then(run, run);
+  captureQueue = next.catch(() => {});
+  return next;
+}
+
+async function captureTabUnlocked(cmd) {
   const prefer = (cmd.prefer || cmd.product || "auto").toLowerCase();
   const settings = await getSettings();
   let tab = null;
@@ -869,17 +1022,19 @@ async function captureTab(cmd) {
     await assertTabInWorkspace(cmd.tabId, cmd);
     tab = await chrome.tabs.get(Number(cmd.tabId));
   } else if (prefer === "active" || cmd.active) {
-    // Capturing the user's active tab is opt-in (privacy).
+    // Capturing the user's active tab is strictly gated by Extension Options.
     if (
-      cmd.allowActiveCapture !== true &&
-      cmd.allowCrossWorkspace !== true &&
-      !settings.allowCrossWorkspace
+      settings.allowCrossWorkspace !== true ||
+      (cmd.allowActiveCapture !== true && cmd.allowCrossWorkspace !== true)
     ) {
       throw new Error(
-        "capture of active tab requires allowActiveCapture or allowCrossWorkspace"
+        "capture of active tab requires enabling Allow cross-workspace ops in Extension Options"
       );
     }
-    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [active] = await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true,
+    });
     tab = active;
   } else if (cmd.urlIncludes || cmd.titleIncludes) {
     const tabs = await chrome.tabs.query({});
@@ -907,11 +1062,7 @@ async function captureTab(cmd) {
     // Optional product finder (not the default product path).
     tab = await findTradingViewTab(prefer);
     if (tab) {
-      await assertTabInWorkspace(tab.id, {
-        ...cmd,
-        allowCrossWorkspace:
-          cmd.allowCrossWorkspace === true || settings.allowCrossWorkspace,
-      });
+      await assertTabInWorkspace(tab.id, cmd);
     }
   } else {
     // prefer=auto (default) and any other non-TV prefer: Hermes workspace tab.
@@ -929,87 +1080,128 @@ async function captureTab(cmd) {
   }
   if (!tab) throw new Error("no matching tab to capture");
 
-  // Activate target so background pages paint (any site). Keep window unfocused when possible.
-  await chrome.tabs.update(tab.id, { active: true });
-  if (tab.windowId != null) {
+  const storedAgentWinId = await getStoredAgentWindowId();
+  const isAgentWin =
+    storedAgentWinId != null && tab.windowId === storedAgentWinId;
+  let prevActiveTab = null;
+  if (!isAgentWin && tab.windowId != null) {
     try {
-      await chrome.windows.update(tab.windowId, { focused: false });
+      const [prev] = await chrome.tabs.query({
+        active: true,
+        windowId: tab.windowId,
+      });
+      if (prev && prev.id !== tab.id) prevActiveTab = prev;
     } catch {
-      /* avoid focus steal when possible */
+      /* ignore */
     }
   }
 
-  // Optional TradingView timeframe helper (only when caller requests ensureTf).
-  let tfInfo = null;
-  const ensureTf = cmd.ensureTf || cmd.ensureTimeframe || null;
-  if (ensureTf) {
-    tfInfo = await ensureTradingViewTimeframe(tab.id, ensureTf);
-    const tfWait = Number(cmd.tfSettleMs);
-    await new Promise((r) =>
-      setTimeout(r, Number.isFinite(tfWait) && tfWait >= 0 ? tfWait : 1200)
-    );
-  }
-
-  // Nudge page to paint after background wake (generic; safe no-op on most sites).
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: "MAIN",
-      func: () => {
-        try {
-          window.dispatchEvent(new Event("focus"));
-          window.dispatchEvent(new Event("resize"));
-          document.dispatchEvent(new Event("visibilitychange"));
-        } catch (_) {
-          /* ignore */
-        }
-      },
+    // Activate target so background pages paint; only unfocus dedicated agent windows.
+    await chrome.tabs.update(tab.id, { active: true });
+    if (isAgentWin && tab.windowId != null) {
+      try {
+        await chrome.windows.update(tab.windowId, { focused: false });
+      } catch {
+        /* avoid focus steal when possible */
+      }
+    }
+
+    // Optional TradingView timeframe helper (only when caller requests ensureTf).
+    let tfInfo = null;
+    const ensureTf = cmd.ensureTf || cmd.ensureTimeframe || null;
+    if (ensureTf) {
+      tfInfo = await ensureTradingViewTimeframe(tab.id, ensureTf);
+      const rawTfWait = Number(cmd.tfSettleMs);
+      const tfWait = Number.isFinite(rawTfWait)
+        ? Math.min(10000, Math.max(0, rawTfWait))
+        : 1200;
+      await new Promise((r) => setTimeout(r, tfWait));
+    }
+
+    // Nudge page to paint after background wake (generic; safe no-op on most sites).
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: () => {
+          try {
+            window.dispatchEvent(new Event("focus"));
+            window.dispatchEvent(new Event("resize"));
+            document.dispatchEvent(new Event("visibilitychange"));
+          } catch (_) {
+            /* ignore */
+          }
+        },
+      });
+    } catch {
+      /* scripting may be unavailable on some pages — settle still helps */
+    }
+
+    // Default settle: short for generic pages; callers can raise settleMs for heavy apps.
+    const settle = Number(cmd.settleMs);
+    const settleMs = Number.isFinite(settle)
+      ? Math.min(10000, Math.max(0, settle))
+      : 600;
+    await new Promise((r) => setTimeout(r, settleMs));
+
+    const preCaptureTab = await chrome.tabs.get(tab.id);
+    if (!preCaptureTab.active) {
+      throw new Error(
+        "capture aborted: target tab is no longer active in its window"
+      );
+    }
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: "png",
     });
-  } catch {
-    /* scripting may be unavailable on some pages — settle still helps */
+    if (!dataUrl || !dataUrl.startsWith("data:image/png")) {
+      throw new Error("captureVisibleTab returned empty/non-png");
+    }
+    const b64 = dataUrl.replace(/^data:image\/png;base64,/, "");
+    // Refresh title after settle (price/tick often updates).
+    const refreshed = await chrome.tabs.get(tab.id);
+    const out = {
+      tabId: tab.id,
+      windowId: tab.windowId,
+      title: refreshed.title || tab.title || "",
+      url: refreshed.url || tab.url || "",
+      prefer,
+      settleMs,
+      timeframe: tfInfo,
+      mime: "image/png",
+      encoding: "base64",
+      pngBase64: b64,
+      bytes: Math.floor((b64.length * 3) / 4),
+    };
+    await noteActivity("capture", {
+      url: out.url,
+      title: (out.title || "").slice(0, 120),
+      bytes: out.bytes,
+      tabId: out.tabId,
+      prefer,
+    });
+    return out;
+  } finally {
+    if (prevActiveTab?.id != null) {
+      await chrome.tabs
+        .update(prevActiveTab.id, { active: true })
+        .catch(() => {});
+    }
   }
-
-  // Default settle: short for generic pages; callers can raise settleMs for heavy apps.
-  const settle = Number(cmd.settleMs);
-  const settleMs = Number.isFinite(settle) && settle >= 0 ? settle : 600;
-  await new Promise((r) => setTimeout(r, settleMs));
-
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-    format: "png",
-  });
-  if (!dataUrl || !dataUrl.startsWith("data:image/png")) {
-    throw new Error("captureVisibleTab returned empty/non-png");
-  }
-  const b64 = dataUrl.replace(/^data:image\/png;base64,/, "");
-  // Refresh title after settle (price/tick often updates).
-  const refreshed = await chrome.tabs.get(tab.id);
-  const out = {
-    tabId: tab.id,
-    windowId: tab.windowId,
-    title: refreshed.title || tab.title || "",
-    url: refreshed.url || tab.url || "",
-    prefer,
-    settleMs,
-    timeframe: tfInfo,
-    mime: "image/png",
-    encoding: "base64",
-    pngBase64: b64,
-    bytes: Math.floor((b64.length * 3) / 4),
-  };
-  await noteActivity("capture", {
-    url: out.url,
-    title: (out.title || "").slice(0, 120),
-    bytes: out.bytes,
-    tabId: out.tabId,
-    prefer,
-  });
-  return out;
 }
 
 async function listTvTabs() {
+  const settings = await getSettings();
+  const restrictWorkspace = settings.allowCrossWorkspace !== true;
+  const groupId = restrictWorkspace ? await getStoredGroupId() : null;
+  if (restrictWorkspace && !(await groupStillExists(groupId))) {
+    return { tabs: [] };
+  }
   const tabs = await chrome.tabs.query({});
   const out = [];
   for (const t of tabs) {
+    if (restrictWorkspace && t.groupId !== groupId) continue;
     const c = classifyTvTab(t.title, t.url);
     if (c.isChart || c.isGC || c.isNQ) {
       out.push({
@@ -1027,12 +1219,18 @@ async function listTvTabs() {
 
 /** Generic tab list for agents (not TV-only). */
 async function listTabs(cmd = {}) {
-  // Default: workspace only. Pass allTabs:true or groupOnly:false for every tab.
+  // Default: workspace only. Expanding outside workspace requires Extension Option opt-in.
   const effectiveGroupOnly = !(
     cmd.allTabs === true ||
     cmd.groupOnly === false ||
     cmd.workspaceOnly === false
   );
+  const settings = await getSettings();
+  if (!effectiveGroupOnly && settings.allowCrossWorkspace !== true) {
+    throw new Error(
+      "listing tabs outside workspace requires enabling Allow cross-workspace ops in Extension Options"
+    );
+  }
   const urlIncludes = cmd.urlIncludes
     ? String(cmd.urlIncludes).toLowerCase()
     : null;
@@ -1167,20 +1365,49 @@ async function evalInTab(cmd) {
   }
   if (expression.length > 8000) throw new Error("expression too long (max 8000)");
 
-  // Default MAIN world for DOM/page execution; ISOLATED when requested.
-  const world =
-    cmd.world === "ISOLATED" ? "ISOLATED" : "MAIN";
+  if (cmd.world === "ISOLATED") {
+    throw new Error(
+      "eval requires MAIN world; ISOLATED is not supported for eval (use dom_query or read_page instead)"
+    );
+  }
+  const world = "MAIN";
 
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
     world,
     args: [expression],
-    func: (expr) => {
+    func: async (expr) => {
+      const toJsonSafe = (val, depth = 0) => {
+        if (val == null || typeof val === "boolean" || typeof val === "string") {
+          return val;
+        }
+        if (typeof val === "number") return Number.isFinite(val) ? val : null;
+        if (typeof val === "bigint") return val.toString();
+        if (depth >= 4) return "[max-depth]";
+        if (Array.isArray(val)) return val.slice(0, 200).map((v) => toJsonSafe(v, depth + 1));
+        if (val instanceof Error) return { name: val.name, message: val.message };
+        if (val instanceof Element) {
+          return { tag: val.tagName, id: val.id || undefined, text: (val.innerText || "").slice(0, 200) };
+        }
+        if (typeof val === "object") {
+          const out = {};
+          const keys = Object.keys(val).slice(0, 100);
+          for (const k of keys) {
+            try {
+              out[k] = toJsonSafe(val[k], depth + 1);
+            } catch {
+              out[k] = "[unreadable]";
+            }
+          }
+          return out;
+        }
+        return String(val);
+      };
       try {
-        // Expression-only eval (not statements) for safer agent probes.
+        // Expression-only eval (not statements) for safer agent probes; awaits Promises.
         // eslint-disable-next-line no-new-func
-        const value = Function(`"use strict"; return (${expr});`)();
-        return { ok: true, value };
+        const raw = await Function(`"use strict"; return (${expr});`)();
+        return { ok: true, value: toJsonSafe(raw) };
       } catch (e) {
         return { ok: false, error: String(e && e.message ? e.message : e) };
       }
@@ -1273,9 +1500,13 @@ async function clickInTab(cmd) {
 
       let matches = filterList(candidates);
       if (matches.length === 0 && !sel && (exactLower || subLower)) {
-        // Fallback to any DOM leaf element when custom widgets don't use button roles.
-        const all = Array.from(document.querySelectorAll("*"));
-        matches = filterList(all).filter((el) => {
+        // Fallback to focused interactive/semantic widgets (avoids full-DOM "*" layout thrash).
+        const broad = Array.from(
+          document.querySelectorAll(
+            'button,a,input,summary,label,li,span[role],div[role],[role="button"],[role="tab"],[role="menuitem"],[role="option"],[role="link"],[role="checkbox"],[role="radio"],[role="switch"],[tabindex]:not([tabindex="-1"]),[data-name],[aria-label],[title]'
+          )
+        );
+        matches = filterList(broad).filter((el) => {
           if (!el.children || el.children.length === 0) return true;
           return !Array.from(el.children).some((c) => filterList([c]).length > 0);
         });
@@ -1291,8 +1522,14 @@ async function clickInTab(cmd) {
           .join(", ");
         return { ok: false, error: `no element matching ${desc}` };
       }
+      if (idx >= matches.length) {
+        return {
+          ok: false,
+          error: `click index ${idx} out of range (matched ${matches.length} element(s))`,
+        };
+      }
 
-      const el = matches[Math.min(idx, matches.length - 1)];
+      const el = matches[idx];
       if (scroll && typeof el.scrollIntoView === "function") {
         try {
           el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -1305,7 +1542,11 @@ async function clickInTab(cmd) {
           el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
         }
       }
-      el.click();
+      if (typeof el.click === "function") {
+        el.click();
+      } else {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      }
       return {
         ok: true,
         tag: el.tagName,
@@ -1344,7 +1585,7 @@ async function domQueryInTab(cmd) {
 
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
-    world: "MAIN",
+    world: "ISOLATED",
     args: [selector, exactText, textIncludes, ariaLabel, visibleOnly, limit, textMax],
     func: (sel, exact, substr, aria, visOnly, cap, txtCap) => {
       const isVisible = (el) => {
@@ -1449,32 +1690,27 @@ async function domQueryInTab(cmd) {
  * Returns base64 body + response meta. Size-capped for bridge safety.
  */
 async function fetchUrl(cmd) {
-  const url = assertHttpUrl(cmd.url);
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("invalid url");
-  }
   const settings = await getSettings();
-  const allowPrivate =
-    cmd.allowPrivate === true || settings.allowPrivateFetch === true;
-  if (!allowPrivate && isPrivateOrLocalHost(parsed.hostname)) {
-    throw new Error(
-      `refusing private/local host for fetch_url: ${parsed.hostname} (enable allowPrivateFetch in Options or pass allowPrivate)`
-    );
-  }
-  // Block obvious cloud metadata hosts even if DNS later rebinds.
-  const host = parsed.hostname.toLowerCase();
-  if (
-    host === "metadata.google.internal" ||
-    host === "metadata" ||
-    host.endsWith(".internal")
-  ) {
-    if (!allowPrivate) {
-      throw new Error(`refusing metadata/internal host: ${host}`);
+  const allowPrivate = settings.allowPrivateFetch === true;
+
+  const validateFetchTarget = (rawUrl) => {
+    const valid = assertHttpUrl(rawUrl);
+    let parsed;
+    try {
+      parsed = new URL(valid);
+    } catch {
+      throw new Error("invalid url");
     }
-  }
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+    if (!allowPrivate && isPrivateOrLocalHost(host)) {
+      throw new Error(
+        `refusing private/local host for fetch_url: ${host} (enable Allow private-host fetch in Extension Options)`
+      );
+    }
+    return valid;
+  };
+
+  const url = validateFetchTarget(cmd.url);
   const maxBytes = Math.max(
     1024,
     Math.min(
@@ -1485,38 +1721,87 @@ async function fetchUrl(cmd) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Number(cmd.timeoutMs) || 60000);
   try {
-    const res = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-      redirect: "follow",
-      cache: "no-store",
-      signal: ctrl.signal,
-    });
-    // After redirects, re-check final host.
-    try {
-      const finalHost = new URL(res.url || url).hostname;
-      if (!allowPrivate && isPrivateOrLocalHost(finalHost)) {
-        throw new Error(
-          `refusing redirect to private/local host: ${finalHost}`
-        );
+    let currentUrl = url;
+    let res = null;
+    const maxRedirects = 5;
+    for (let hop = 0; hop <= maxRedirects; hop++) {
+      validateFetchTarget(currentUrl);
+      res = await fetch(currentUrl, {
+        method: "GET",
+        credentials: "include",
+        redirect: "manual",
+        cache: "no-store",
+        signal: ctrl.signal,
+      });
+      if (res.type === "opaqueredirect") {
+        throw new Error("refusing opaque redirect for fetch_url");
       }
-    } catch (e) {
-      if (String(e.message || e).includes("refusing")) throw e;
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get("location");
+        try {
+          res.body?.cancel?.();
+        } catch {
+          /* ignore */
+        }
+        if (!loc) break;
+        if (hop >= maxRedirects) {
+          throw new Error(`too many redirects (>${maxRedirects})`);
+        }
+        currentUrl = new URL(loc, currentUrl).href;
+        continue;
+      }
+      break;
     }
+
     const cl = res.headers.get("content-length");
     if (cl && Number(cl) > maxBytes) {
+      try {
+        res.body?.cancel?.();
+      } catch {
+        /* ignore */
+      }
       throw new Error(
         `content-length ${cl} exceeds maxBytes ${maxBytes}`
       );
     }
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength > maxBytes) {
-      throw new Error(
-        `body ${buf.byteLength} exceeds maxBytes ${maxBytes}`
-      );
+
+    let bytes;
+    if (res.body && typeof res.body.getReader === "function") {
+      const reader = res.body.getReader();
+      const chunks = [];
+      let total = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value || value.byteLength === 0) continue;
+          total += value.byteLength;
+          if (total > maxBytes) {
+            await reader.cancel().catch(() => {});
+            throw new Error(`streamed body ${total} exceeds maxBytes ${maxBytes}`);
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        bytes.set(c, offset);
+        offset += c.byteLength;
+      }
+    } else {
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength > maxBytes) {
+        throw new Error(
+          `body ${buf.byteLength} exceeds maxBytes ${maxBytes}`
+        );
+      }
+      bytes = new Uint8Array(buf);
     }
+
     // base64 without huge stack: chunked
-    const bytes = new Uint8Array(buf);
     let binary = "";
     const chunk = 0x8000;
     for (let i = 0; i < bytes.length; i += chunk) {
@@ -1529,10 +1814,10 @@ async function fetchUrl(cmd) {
     const out = {
       ok: true,
       status: res.status,
-      finalUrl: res.url || url,
+      finalUrl: res.url || currentUrl,
       contentType: res.headers.get("content-type"),
       contentDisposition: res.headers.get("content-disposition"),
-      contentLength: buf.byteLength,
+      contentLength: bytes.byteLength,
       bodyBase64,
       encoding: "base64",
     };
@@ -1556,7 +1841,7 @@ async function listPageAssets(cmd) {
   const limit = Math.max(1, Math.min(Number(cmd.limit) || 200, 500));
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
-    world: "MAIN",
+    world: "ISOLATED",
     args: [limit],
     func: (lim) => {
       const abs = (u) => {
@@ -1618,7 +1903,7 @@ async function typeInTab(cmd) {
       const el = document.querySelector(sel);
       if (!el) return { ok: false, error: `no element matching ${sel}` };
       el.focus();
-      if ("value" in el) {
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
         const next = doClear ? value : String(el.value || "") + value;
         const proto = Object.getPrototypeOf(el);
         const setter = proto && Object.getOwnPropertyDescriptor(proto, "value")?.set;
@@ -1915,7 +2200,10 @@ async function runEditorInTab(cmd, mode) {
         if (opMode === "get") {
           if (sel || targets.length === 0) {
             const areas = Array.from(
-              document.querySelectorAll(sel || 'textarea:not(.inputarea), [contenteditable="true"]')
+              document.querySelectorAll(
+                sel ||
+                  'textarea:not(.inputarea), [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'
+              )
             );
             for (const el of areas) {
               if (!isVisible(el) && !sel) continue;
@@ -2005,9 +2293,15 @@ async function runEditorInTab(cmd, mode) {
             };
           }
 
+          if (mIdx !== null && (mIdx < 0 || mIdx >= enriched.length)) {
+            return {
+              ok: false,
+              error: `modelIndex ${mIdx} out of range (0..${enriched.length - 1})`,
+            };
+          }
           const chosen =
             mIdx !== null
-              ? enriched[Math.min(mIdx, enriched.length - 1)]
+              ? enriched[mIdx]
               : [...enriched].sort((a, b) => b.s - a.s)[0];
           const raw = chosen.info.value;
           return {
@@ -2026,9 +2320,15 @@ async function runEditorInTab(cmd, mode) {
 
         // opMode === "set"
         if (targets.length > 0) {
+          if (mIdx !== null && (mIdx < 0 || mIdx >= targets.length)) {
+            return {
+              ok: false,
+              error: `modelIndex ${mIdx} out of range (0..${targets.length - 1})`,
+            };
+          }
           const chosen =
             mIdx !== null
-              ? targets[Math.min(mIdx, targets.length - 1)]
+              ? targets[mIdx]
               : [...targets].sort((a, b) => scoreTarget(b) - scoreTarget(a))[0];
 
           if (chosen.model) {
@@ -2107,13 +2407,26 @@ async function runEditorInTab(cmd, mode) {
         }
 
         // Sealed Monaco textarea.inputarea synthetic paste fallback
-        const monacoInput = document.querySelector(
-          sel ? `${sel} textarea.inputarea, ${sel}` : ".monaco-editor textarea.inputarea"
-        );
+        const monacoSel = sel
+          ? sel
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .flatMap((s) => [`${s} textarea.inputarea`, s])
+              .join(", ")
+          : ".monaco-editor textarea.inputarea";
+        const monacoInput = document.querySelector(monacoSel);
         if (monacoInput && monacoInput.tagName === "TEXTAREA") {
           monacoInput.focus();
+          const isMac = /mac/i.test(navigator.platform || navigator.userAgent || "");
           monacoInput.dispatchEvent(
-            new KeyboardEvent("keydown", { key: "a", code: "KeyA", ctrlKey: true, bubbles: true })
+            new KeyboardEvent("keydown", {
+              key: "a",
+              code: "KeyA",
+              metaKey: isMac,
+              ctrlKey: !isMac,
+              bubbles: true,
+            })
           );
           try {
             document.execCommand("selectAll", false);
@@ -2142,14 +2455,22 @@ async function runEditorInTab(cmd, mode) {
           }
         }
 
-        const fallbackEl = document.querySelector(
-          sel || 'textarea:not(.inputarea), [contenteditable="true"]'
+        const fallbackList = Array.from(
+          document.querySelectorAll(
+            sel ||
+              'textarea:not(.inputarea), [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'
+          )
         );
+        const fallbackEl =
+          fallbackList.find((el) => isVisible(el)) || (sel ? fallbackList[0] : null);
         if (!fallbackEl) {
           return { ok: false, error: "no supported code editor or editable element found" };
         }
         fallbackEl.focus();
-        if ("value" in fallbackEl) {
+        if (
+          fallbackEl instanceof HTMLInputElement ||
+          fallbackEl instanceof HTMLTextAreaElement
+        ) {
           const proto = Object.getPrototypeOf(fallbackEl);
           const setter = proto && Object.getOwnPropertyDescriptor(proto, "value")?.set;
           if (setter) setter.call(fallbackEl, newValue);
@@ -2159,6 +2480,8 @@ async function runEditorInTab(cmd, mode) {
         } else if (fallbackEl.isContentEditable) {
           fallbackEl.textContent = newValue;
           fallbackEl.dispatchEvent(new Event("input", { bubbles: true }));
+        } else {
+          return { ok: false, error: "matched fallback element is not editable" };
         }
         return {
           ok: true,
@@ -2199,19 +2522,35 @@ async function editorSetInTab(cmd) {
 function waitForTabComplete(tabId, timeoutMs = 15000) {
   return new Promise((resolve) => {
     let settled = false;
-    const onUpdated = (updatedId, changeInfo) => {
-      if (updatedId !== tabId || changeInfo.status !== "complete") return;
-      // Small settle so load handlers / late DOM work finish before extraction.
-      setTimeout(finish, 250);
-    };
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
+    const cleanup = () => {
       try {
         chrome.tabs.onUpdated.removeListener(onUpdated);
       } catch {
         /* ignore */
       }
+      try {
+        chrome.tabs.onRemoved.removeListener(onRemoved);
+      } catch {
+        /* ignore */
+      }
+    };
+    const onUpdated = (updatedId, changeInfo) => {
+      if (updatedId !== tabId || changeInfo.status !== "complete") return;
+      // Small settle so load handlers / late DOM work finish before extraction.
+      setTimeout(finish, 250);
+    };
+    const onRemoved = (removedId) => {
+      if (removedId !== tabId) return;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      resolve({ status: "gone", title: "", timedOut: false });
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       chrome.tabs
         .get(tabId)
         .then((tab) =>
@@ -2223,11 +2562,7 @@ function waitForTabComplete(tabId, timeoutMs = 15000) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try {
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-      } catch {
-        /* ignore */
-      }
+      cleanup();
       chrome.tabs
         .get(tabId)
         .then((tab) =>
@@ -2236,6 +2571,23 @@ function waitForTabComplete(tabId, timeoutMs = 15000) {
         .catch(() => resolve({ status: "gone", title: "", timedOut: false }));
     };
     chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    // Resolve right away if the tab already reached status === "complete".
+    chrome.tabs
+      .get(tabId)
+      .then((tab) => {
+        if (!settled && tab?.status === "complete") {
+          setTimeout(finish, 100);
+        }
+      })
+      .catch(() => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          resolve({ status: "gone", title: "", timedOut: false });
+        }
+      });
   });
 }
 
@@ -2267,7 +2619,7 @@ async function readPage(cmd) {
   const textMax = Math.min(20000, Math.max(200, Number(cmd.textMax) || 4000));
   const [res] = await chrome.scripting.executeScript({
     target: { tabId },
-    world: "MAIN",
+    world: "ISOLATED",
     args: [textMax],
     func: (cap) => {
       const main =
@@ -2372,11 +2724,15 @@ async function handleCommand(cmd) {
 
 async function postResult(bridge, id, payload) {
   const headers = await authHeaders({ "Content-Type": "application/json" });
-  const res = await fetch(`${bridge}/v1/result`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ id, ...payload }),
-  });
+  const res = await fetchWithTimeout(
+    `${bridge}/v1/result`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id, ...payload }),
+    },
+    15000
+  );
   if (!res.ok) {
     let msg = `postResult HTTP ${res.status}`;
     try {
@@ -2399,15 +2755,19 @@ function extensionIdentityQuery() {
 async function postHello(bridge) {
   try {
     const headers = await authHeaders({ "Content-Type": "application/json" });
-    await fetch(`${bridge}/v1/hello`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        extension: "hermes-chrome",
-        version: chrome.runtime.getManifest().version,
-      }),
-      cache: "no-store",
-    });
+    await fetchWithTimeout(
+      `${bridge}/v1/hello`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          extension: "hermes-chrome",
+          version: chrome.runtime.getManifest().version,
+        }),
+        cache: "no-store",
+      },
+      5000
+    );
   } catch {
     /* bridge down */
   }
@@ -2415,36 +2775,41 @@ async function postHello(bridge) {
 
 async function pairWithBridge() {
   const settings = await getSettings();
-  const bridge = settings.bridgeUrl || DEFAULT_BRIDGE;
+  const bridge = normalizeBridgeUrlOrDefault(settings.bridgeUrl);
   let res = null;
   let body = {};
 
-  try {
-    res = await fetch(`${bridge}/v1/pair`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-      cache: "no-store",
-    });
-    body = await res.json().catch(() => ({}));
-  } catch {
-    res = null;
-  }
-
-  // If pairing closed or bridge down, ask native host to re-open pairing / start bridge and retry
-  if (!res || !res.ok || !body.ok || !body.token) {
-    const nativeRes = await sendNativeMessageAsync({ action: "pair_open" });
-    if (nativeRes && (nativeRes.ok || nativeRes.action === "pair_open")) {
-      try {
-        res = await fetch(`${bridge}/v1/pair`, {
+  const tryPairRequest = async () => {
+    try {
+      res = await fetchWithTimeout(
+        `${bridge}/v1/pair`,
+        {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: "{}",
           cache: "no-store",
-        });
-        body = await res.json().catch(() => ({}));
-      } catch {
-        res = null;
+        },
+        8000
+      );
+      body = await res.json().catch(() => ({}));
+    } catch {
+      res = null;
+      body = {};
+    }
+  };
+
+  await tryPairRequest();
+
+  // If pairing closed or bridge down, ask native host to re-open pairing / start bridge and retry up to 3x
+  if (!res || !res.ok || !body.ok || !body.token) {
+    const nativeRes = await sendNativeMessageAsync({ action: "pair_open" });
+    if (nativeRes && (nativeRes.ok || nativeRes.action === "pair_open")) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 250 * attempt));
+        }
+        await tryPairRequest();
+        if (res && res.ok && body.ok && body.token) break;
       }
     }
   }
@@ -2452,15 +2817,17 @@ async function pairWithBridge() {
   if (!res || !res.ok || !body.ok || !body.token) {
     throw new Error(body.error || (res ? `pair failed HTTP ${res.status}` : "bridge offline"));
   }
+  const safeBridge = normalizeBridgeUrlOrDefault(body.bridge || bridge);
   const next = {
     ...settings,
     bridgeToken: String(body.token),
-    bridgeUrl: (body.bridge || bridge).replace(/\/$/, ""),
+    bridgeUrl: safeBridge,
   };
   await chrome.storage.local.set({ [SETTINGS_KEY]: next });
   autoPairFailStreak = 0;
   lastAuthErrorAt = 0;
-  startPolling();
+  bridgeAuthDisabled = false;
+  startPolling("pair");
   return {
     ok: true,
     tokenSet: true,
@@ -2488,12 +2855,13 @@ async function tryAutoPair(reason = "poll") {
   if (now - lastAutoPairAt < minInterval) return false;
   lastAutoPairAt = now;
 
-  const bridge = settings.bridgeUrl || DEFAULT_BRIDGE;
+  const bridge = normalizeBridgeUrlOrDefault(settings.bridgeUrl);
   try {
     // Touch health so bridge can auto-reopen pairing when disconnected.
-    const hr = await fetch(`${bridge}/v1/health`, { cache: "no-store" });
+    const hr = await fetchWithTimeout(`${bridge}/v1/health`, { cache: "no-store" }, 5000);
     if (hr.ok) {
       const health = await hr.json().catch(() => ({}));
+      bridgeAuthDisabled = health.auth === false;
       if (health.auth === false) {
         // No token required on bridge.
         return true;
@@ -2519,19 +2887,49 @@ function getActionStorage() {
   return chrome.storage.session || chrome.storage.local;
 }
 
-function sanitizeResultForLog(action, data) {
-  if (!data) return data;
-  if (action === "capture" && typeof data === "object") {
-    const img = data.image || data.dataUrl || data.data;
-    if (img && typeof img === "string") {
-      const preview = img.startsWith("data:") ? img : `data:image/png;base64,${img}`;
-      return {
-        ...data,
-        imagePreview: preview,
-      };
+function enqueueActionStorage(fn) {
+  const next = actionStorageQueue.then(fn, fn);
+  actionStorageQueue = next.catch(() => {});
+  return next;
+}
+
+function sanitizeResultForLog(action, data, { forStorage = false } = {}) {
+  if (!data || typeof data !== "object") return data;
+  const copy = { ...data };
+  const rawImg = copy.pngBase64 || copy.image || copy.dataUrl || copy.data;
+  delete copy.pngBase64;
+  delete copy.bodyBase64;
+  delete copy.image;
+  delete copy.dataUrl;
+  if (typeof copy.data === "string") delete copy.data;
+
+  if (forStorage) {
+    delete copy.imagePreview;
+    if (typeof copy.text === "string" && copy.text.length > 2000) {
+      copy.text = `${copy.text.slice(0, 2000)}…`;
+    }
+    if (typeof copy.value === "string" && copy.value.length > 2000) {
+      copy.value = `${copy.value.slice(0, 2000)}…`;
+    }
+    return copy;
+  }
+
+  if (action === "capture" && typeof rawImg === "string" && rawImg) {
+    let preview = rawImg.startsWith("data:") ? rawImg : `data:image/png;base64,${rawImg}`;
+    if (!/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(preview)) {
+      preview = "";
+    }
+    if (preview) {
+      copy.imagePreview = preview;
     }
   }
-  return data;
+  if (typeof copy.text === "string" && copy.text.length > 4000) {
+    copy.text = `${copy.text.slice(0, 4000)}…`;
+  }
+  if (typeof copy.value === "string" && copy.value.length > 4000) {
+    copy.value = `${copy.value.slice(0, 4000)}…`;
+  }
+  return copy;
 }
 
 function sanitizeParamsForLog(action, params) {
@@ -2539,10 +2937,28 @@ function sanitizeParamsForLog(action, params) {
   const copy = { ...params };
   delete copy.token;
   delete copy["X-Hermes-Chrome-Token"];
-  if (action === "type" || action === "fill") {
+  const act = String(action || "").toLowerCase();
+  if (act === "type" || act === "fill") {
     const selector = String(copy.selector || "").toLowerCase();
-    if (copy.sensitive || selector.includes("password") || selector.includes("secret")) {
+    const fieldName = String(copy.name || "").toLowerCase();
+    if (
+      copy.sensitive ||
+      /(password|passwd|secret|token|otp|totp|pin|cvv|cvc|api[_-]?key|auth)/i.test(
+        `${selector} ${fieldName}`
+      )
+    ) {
       copy.text = "••••••••";
+    } else if (typeof copy.text === "string" && copy.text.length > 300) {
+      copy.text = `${copy.text.slice(0, 300)}… [${copy.text.length} chars]`;
+    }
+  } else if ((act === "editor_set" || act === "editor-set") && typeof copy.text === "string" && copy.text.length > 300) {
+    copy.text = `${copy.text.slice(0, 300)}… [${copy.text.length} chars]`;
+  } else if (act === "eval" || act === "evaluate") {
+    if (typeof copy.expression === "string" && copy.expression.length > 500) {
+      copy.expression = `${copy.expression.slice(0, 500)}…`;
+    }
+    if (typeof copy.code === "string" && copy.code.length > 500) {
+      copy.code = `${copy.code.slice(0, 500)}…`;
     }
   }
   return copy;
@@ -2563,64 +2979,74 @@ async function recordActionStart(cmd) {
     entry,
   }).catch(() => {});
 
-  try {
-    const area = getActionStorage();
-    const res = await area.get([ACTION_HISTORY_KEY]);
-    const history = Array.isArray(res[ACTION_HISTORY_KEY]) ? res[ACTION_HISTORY_KEY] : [];
-    history.unshift(entry);
-    if (history.length > MAX_ACTION_HISTORY) {
-      history.length = MAX_ACTION_HISTORY;
+  await enqueueActionStorage(async () => {
+    try {
+      const area = getActionStorage();
+      const res = await area.get([ACTION_HISTORY_KEY]);
+      const history = Array.isArray(res[ACTION_HISTORY_KEY]) ? res[ACTION_HISTORY_KEY] : [];
+      history.unshift(entry);
+      if (history.length > MAX_ACTION_HISTORY) {
+        history.length = MAX_ACTION_HISTORY;
+      }
+      await area.set({ [ACTION_HISTORY_KEY]: history });
+    } catch {
+      /* ignore storage error */
     }
-    await area.set({ [ACTION_HISTORY_KEY]: history });
-  } catch {
-    /* ignore storage error */
-  }
+  });
   return startTime;
 }
 
 async function recordActionEnd(cmd, ok, data, error, startTime) {
   const endTime = Date.now();
   const durationMs = Math.max(0, endTime - startTime);
-  const update = {
+  const liveUpdate = {
     id: cmd.id,
     action: cmd.action,
     status: ok ? "success" : "error",
     endTime,
     durationMs,
-    data: data ? sanitizeResultForLog(cmd.action, data) : undefined,
+    data: data ? sanitizeResultForLog(cmd.action, data, { forStorage: false }) : undefined,
     error: error ? String(error) : undefined,
+  };
+  const storedUpdate = {
+    ...liveUpdate,
+    data: data ? sanitizeResultForLog(cmd.action, data, { forStorage: true }) : undefined,
   };
 
   chrome.runtime.sendMessage({
     type: "hermes_action_event",
     phase: "end",
-    update,
+    update: liveUpdate,
   }).catch(() => {});
 
-  try {
-    const area = getActionStorage();
-    const res = await area.get([ACTION_HISTORY_KEY]);
-    const history = Array.isArray(res[ACTION_HISTORY_KEY]) ? res[ACTION_HISTORY_KEY] : [];
-    const idx = history.findIndex((item) => item.id === cmd.id);
-    if (idx !== -1) {
-      history[idx] = { ...history[idx], ...update };
-      await area.set({ [ACTION_HISTORY_KEY]: history });
+  await enqueueActionStorage(async () => {
+    try {
+      const area = getActionStorage();
+      const res = await area.get([ACTION_HISTORY_KEY]);
+      const history = Array.isArray(res[ACTION_HISTORY_KEY]) ? res[ACTION_HISTORY_KEY] : [];
+      const idx = history.findIndex((item) => item.id === cmd.id);
+      if (idx !== -1) {
+        history[idx] = { ...history[idx], ...storedUpdate };
+        await area.set({ [ACTION_HISTORY_KEY]: history });
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
-  }
+  });
 }
 
 async function pollOnce(bridge) {
   const ctrl = new AbortController();
+  activePollAbort = ctrl;
   const timer = setTimeout(() => ctrl.abort(), 28000);
   try {
-    // Ensure we have a token before long-poll when possible.
+    // Ensure we have a token before long-poll when auth may be enabled.
     const settings = await getSettings();
-    if (!settings.bridgeToken) {
+    if (!settings.bridgeToken && !bridgeAuthDisabled) {
       await tryAutoPair("before_poll");
     }
     const headers = await authHeaders();
+    const sentToken = headers["X-Hermes-Chrome-Token"] || "";
     const res = await fetch(
       `${bridge}/v1/poll?timeout=25&${extensionIdentityQuery()}`,
       {
@@ -2631,12 +3057,12 @@ async function pollOnce(bridge) {
     );
     if (res.status === 401) {
       lastAuthErrorAt = Date.now();
-      // Stale/wrong token or never paired — clear empty isn't enough; try pair.
+      bridgeAuthDisabled = false;
+      // Stale/wrong token or never paired — only clear stored token if it still matches sentToken.
       const s = await getSettings();
       if (!s.bridgeToken) {
         await tryAutoPair("401");
-      } else {
-        // Token rejected: clear and re-pair (bridge rotated token).
+      } else if (s.bridgeToken === sentToken) {
         await chrome.storage.local.set({
           [SETTINGS_KEY]: { ...s, bridgeToken: "" },
         });
@@ -2654,16 +3080,21 @@ async function pollOnce(bridge) {
       await recordActionEnd(cmd, true, data, null, startTime);
     } catch (e) {
       const errStr = String(e?.message || e);
-      await postResult(bridge, cmd.id, {
-        ok: false,
-        error: errStr,
-      });
+      try {
+        await postResult(bridge, cmd.id, {
+          ok: false,
+          error: errStr,
+        });
+      } catch {
+        /* bridge failed to accept error result */
+      }
       await recordActionEnd(cmd, false, null, errStr, startTime);
     }
   } catch {
     /* bridge down / abort */
   } finally {
     clearTimeout(timer);
+    if (activePollAbort === ctrl) activePollAbort = null;
   }
 }
 
@@ -2671,10 +3102,10 @@ async function pollLoop(generation) {
   while (polling && generation === pollGeneration) {
     const settings = await getSettings();
     if (!settings.pollingEnabled) {
-      await new Promise((r) => setTimeout(r, 1000));
-      continue;
+      stopPolling();
+      return;
     }
-    if (!settings.bridgeToken) {
+    if (!settings.bridgeToken && !bridgeAuthDisabled) {
       const ok = await tryAutoPair("loop");
       if (!ok) {
         // Wait a bit before next auto-pair attempt (avoid tight loop).
@@ -2687,72 +3118,113 @@ async function pollLoop(generation) {
   }
 }
 
-function startPolling() {
+function startPolling(source = "manual") {
   pollGeneration += 1;
   const generation = pollGeneration;
-  polling = true;
-  autoPairFailStreak = 0;
-  // Native host (if installed) starts the bridge; then auto-pair + hello.
-  ensureNativeCompanion(true);
-  (async () => {
+  if (activePollAbort) {
     try {
-      // Give host a moment to spawn bridge.py
-      await new Promise((r) => setTimeout(r, 400));
-      await tryAutoPair("start");
-      const b = await getBridgeBase();
-      await postHello(b);
+      activePollAbort.abort();
     } catch {
-      /* bridge down */
+      /* ignore */
     }
-  })();
-  pollLoop(generation);
-  // Keep service worker eligible for wake-ups (MV3).
-  try {
-    chrome.alarms.create("hermes-chrome-poll", { periodInMinutes: 1 });
-  } catch {
-    /* ignore */
+    activePollAbort = null;
   }
-  try {
-    chrome.alarms.create("hermes-chrome-native", { periodInMinutes: 2 });
-  } catch {
-    /* ignore */
+  polling = true;
+  if (source !== "alarm") {
+    autoPairFailStreak = 0;
   }
+  getSettings()
+    .then((settings) => {
+      if (!polling || generation !== pollGeneration) return;
+      if (!settings.pollingEnabled) {
+        stopPolling();
+        return;
+      }
+      // Native host (if installed) starts the bridge; then auto-pair + hello.
+      ensureNativeCompanion(true);
+      (async () => {
+        try {
+          // Give host a moment to spawn bridge.py
+          await new Promise((r) => setTimeout(r, 400));
+          if (!polling || generation !== pollGeneration) return;
+          if (!bridgeAuthDisabled) await tryAutoPair("start");
+          const b = await getBridgeBase();
+          await postHello(b);
+        } catch {
+          /* bridge down */
+        }
+      })();
+      pollLoop(generation);
+      // Keep service worker eligible for wake-ups (MV3).
+      try {
+        chrome.alarms.create("hermes-chrome-poll", { periodInMinutes: 1 });
+      } catch {
+        /* ignore */
+      }
+      try {
+        chrome.alarms.create("hermes-chrome-native", { periodInMinutes: 2 });
+      } catch {
+        /* ignore */
+      }
+    })
+    .catch(() => {});
 }
 
 function stopPolling() {
   polling = false;
   pollGeneration += 1;
+  if (activePollAbort) {
+    try {
+      activePollAbort.abort();
+    } catch {
+      /* ignore */
+    }
+    activePollAbort = null;
+  }
   try {
     chrome.alarms.clear("hermes-chrome-poll");
   } catch {
     /* ignore */
   }
+  try {
+    chrome.alarms.clear("hermes-chrome-native");
+  } catch {
+    /* ignore */
+  }
 }
 
-chrome.runtime.onInstalled.addListener(() => startPolling());
-chrome.runtime.onStartup.addListener(() => startPolling());
+chrome.runtime.onInstalled.addListener(() => startPolling("installed"));
+chrome.runtime.onStartup.addListener(() => startPolling("startup"));
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "hermes-chrome-poll") startPolling();
+  if (alarm.name === "hermes-chrome-poll") startPolling("alarm");
   if (alarm.name === "hermes-chrome-native") ensureNativeCompanion(false);
 });
-startPolling();
+startPolling("boot");
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes[SETTINGS_KEY]) startPolling();
+  if (area === "local" && changes[SETTINGS_KEY]) {
+    bridgeAuthDisabled = false;
+    startPolling("settings");
+  }
 });
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (sender?.id !== chrome.runtime.id) {
+    return false;
+  }
   if (msg?.type === "status") {
-    status().then((s) => {
-      s.authErrorRecent =
-        lastAuthErrorAt > 0 && Date.now() - lastAuthErrorAt < 60000;
-      sendResponse(s);
-    });
+    status()
+      .then((s) => {
+        s.authErrorRecent =
+          lastAuthErrorAt > 0 && Date.now() - lastAuthErrorAt < 60000;
+        sendResponse(s);
+      })
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
   }
   if (msg?.type === "reconnect") {
     ensureNativeCompanion(true);
-    startPolling();
+    startPolling("reconnect");
     sendResponse({ ok: true });
     return false;
   }
@@ -2767,13 +3239,104 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
   }
+  if (msg?.type === "open_workspace_tab") {
+    (async () => {
+      try {
+        const res = await openInGroup(msg.url, {
+          newTab: msg.newTab !== false,
+          separateWindow: msg.separateWindow === true,
+          width: msg.width,
+          height: msg.height,
+        });
+        sendResponse({ ok: true, ...res });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e?.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg?.type === "bridge_fetch") {
+    (async () => {
+      try {
+        const method = String(msg.method || "GET").toUpperCase();
+        if (method !== "GET" && method !== "POST") {
+          sendResponse({ ok: false, status: 400, error: "method must be GET or POST" });
+          return;
+        }
+        const path = String(msg.path || "");
+        if (!/^\/v1\/hermes\/[a-zA-Z0-9._:@%/-]+(\?[^#\s]*)?$/.test(path)) {
+          sendResponse({ ok: false, status: 400, error: "invalid bridge path" });
+          return;
+        }
+        const settings = await getSettings();
+        const base = normalizeBridgeUrlOrDefault(settings.bridgeUrl);
+        let targetUrl;
+        try {
+          targetUrl = new URL(path, base);
+        } catch {
+          sendResponse({ ok: false, status: 400, error: "invalid bridge path" });
+          return;
+        }
+        if (targetUrl.origin !== base || !targetUrl.pathname.startsWith("/v1/hermes/")) {
+          sendResponse({ ok: false, status: 400, error: "invalid bridge path" });
+          return;
+        }
+        const headers = await authHeaders(
+          method === "POST" ? { "Content-Type": "application/json" } : {}
+        );
+        const opts = {
+          method,
+          headers,
+          cache: "no-store",
+        };
+        if (method === "POST" && msg.body !== undefined) {
+          opts.body =
+            typeof msg.body === "string" ? msg.body : JSON.stringify(msg.body);
+        }
+        const defaultTimeout = method === "POST" ? 200000 : 15000;
+        const timeoutMs = msg.timeoutMs
+          ? Math.min(310000, Math.max(1000, Number(msg.timeoutMs) || defaultTimeout))
+          : defaultTimeout;
+        const res = await fetchWithTimeout(targetUrl.href, opts, timeoutMs);
+        const text = await res.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = { raw: text };
+        }
+        sendResponse({
+          ok: res.ok,
+          status: res.status,
+          data,
+          error: res.ok ? null : data?.error || `HTTP ${res.status}`,
+        });
+      } catch (e) {
+        sendResponse({
+          ok: false,
+          status: 0,
+          error: String(e?.message || e),
+        });
+      }
+    })();
+    return true;
+  }
   if (msg?.type === "getMcpConfig") {
-    const rootHint = "~/.hermes/hermes-chrome";
+    const isWin =
+      typeof navigator !== "undefined" &&
+      String(navigator.userAgent || "").includes("Windows");
+    const rootHint = isWin
+      ? "%USERPROFILE%\\.hermes\\hermes-chrome"
+      : "~/.hermes/hermes-chrome";
+    const pyCmd = isWin ? "python" : "python3";
+    const scriptHint = isWin
+      ? `${rootHint}\\mcp_server.py`
+      : `${rootHint}/mcp_server.py`;
     const mcpConfig = {
       mcpServers: {
         "hermes-chrome": {
-          command: "python3",
-          args: [`${rootHint}/mcp_server.py`],
+          command: pyCmd,
+          args: [scriptHint],
           env: {
             HERMES_CHROME_ROOT: rootHint,
           },
@@ -2785,7 +3348,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       json: JSON.stringify(mcpConfig, null, 2),
       cursorJson: JSON.stringify(mcpConfig, null, 2),
       claudeJson: JSON.stringify(mcpConfig, null, 2),
-      grokToml: `[mcp_servers.hermes-chrome]\ncommand = "python3"\nargs = ["${rootHint}/mcp_server.py"]\nenabled = true\nstartup_timeout_sec = 45\ntool_timeout_sec = 120\n\n[mcp_servers.hermes-chrome.env]\nHERMES_CHROME_ROOT = "${rootHint}"`,
+      grokToml: `[mcp_servers.hermes-chrome]\ncommand = ${JSON.stringify(pyCmd)}\nargs = [${JSON.stringify(scriptHint)}]\nenabled = true\nstartup_timeout_sec = 45\ntool_timeout_sec = 120\n\n[mcp_servers.hermes-chrome.env]\nHERMES_CHROME_ROOT = ${JSON.stringify(rootHint)}`,
     });
     return false;
   }
@@ -2797,45 +3360,55 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg?.type === "getSettings") {
-    getSettings().then((s) => {
-      // Never echo full token to popup JSON dumps — mask for UI.
-      sendResponse({
-        ...s,
-        bridgeToken: s.bridgeToken || "",
-        tokenSet: !!(s.bridgeToken && s.bridgeToken.length),
-      });
-    });
+    getSettings()
+      .then((s) => {
+        // Never expose raw bridgeToken to UI pages — only flag and length.
+        sendResponse({
+          ...s,
+          bridgeToken: "",
+          tokenSet: !!(s.bridgeToken && s.bridgeToken.length),
+          tokenLen: (s.bridgeToken || "").length,
+        });
+      })
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
   }
   if (msg?.type === "setSettings") {
     const incoming = msg.settings || {};
-    getSettings().then((cur) => {
-      const merged = {
-        bridgeUrl: incoming.bridgeUrl ?? cur.bridgeUrl,
-        bridgeToken:
-          incoming.bridgeToken !== undefined
-            ? String(incoming.bridgeToken || "")
-            : cur.bridgeToken,
-        groupTitle: incoming.groupTitle ?? cur.groupTitle,
-        groupColor: incoming.groupColor ?? cur.groupColor,
-        pollingEnabled:
-          incoming.pollingEnabled !== undefined
-            ? !!incoming.pollingEnabled
-            : cur.pollingEnabled,
-        allowCrossWorkspace:
-          incoming.allowCrossWorkspace !== undefined
-            ? !!incoming.allowCrossWorkspace
-            : cur.allowCrossWorkspace,
-        allowPrivateFetch:
-          incoming.allowPrivateFetch !== undefined
-            ? !!incoming.allowPrivateFetch
-            : cur.allowPrivateFetch,
-      };
-      return chrome.storage.local.set({ [SETTINGS_KEY]: merged }).then(() => {
-        startPolling();
-        sendResponse({ ok: true, tokenSet: !!merged.bridgeToken });
-      });
-    });
+    getSettings()
+      .then((cur) => {
+        const nextBridgeUrl =
+          incoming.bridgeUrl !== undefined
+            ? assertLoopbackBridgeUrl(String(incoming.bridgeUrl || DEFAULT_BRIDGE))
+            : cur.bridgeUrl;
+        const merged = {
+          bridgeUrl: nextBridgeUrl,
+          bridgeToken:
+            incoming.bridgeToken !== undefined
+              ? String(incoming.bridgeToken || "")
+              : cur.bridgeToken,
+          groupTitle: incoming.groupTitle ?? cur.groupTitle,
+          groupColor: incoming.groupColor ?? cur.groupColor,
+          pollingEnabled:
+            incoming.pollingEnabled !== undefined
+              ? !!incoming.pollingEnabled
+              : cur.pollingEnabled,
+          allowCrossWorkspace:
+            incoming.allowCrossWorkspace !== undefined
+              ? !!incoming.allowCrossWorkspace
+              : cur.allowCrossWorkspace,
+          allowPrivateFetch:
+            incoming.allowPrivateFetch !== undefined
+              ? !!incoming.allowPrivateFetch
+              : cur.allowPrivateFetch,
+        };
+        return chrome.storage.local.set({ [SETTINGS_KEY]: merged }).then(() => {
+          if (merged.pollingEnabled) startPolling("setSettings");
+          else stopPolling();
+          sendResponse({ ok: true, tokenSet: !!merged.bridgeToken });
+        });
+      })
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
   }
   if (msg?.type === "get_action_history") {
@@ -2867,10 +3440,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         if (chrome.sidePanel?.open) {
-          let winId = msg.windowId;
+          let winId = msg?.windowId ?? sender?.tab?.windowId;
           if (!winId) {
-            const currentWin = await chrome.windows.getCurrent();
-            winId = currentWin.id;
+            const currentWin = await chrome.windows.getLastFocused();
+            winId = currentWin?.id;
           }
           await chrome.sidePanel.open({ windowId: winId });
           sendResponse({ ok: true });

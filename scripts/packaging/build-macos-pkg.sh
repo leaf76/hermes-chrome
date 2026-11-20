@@ -59,6 +59,8 @@ rsync -a \
   --exclude '__pycache__/' \
   --exclude '*.pyc' \
   --exclude 'store/dist/' \
+  --exclude 'store/icons/' \
+  --exclude 'store/screenshots/' \
   --exclude 'store/submission-pack/' \
   --exclude 'dist/' \
   --exclude 'npm/node_modules/' \
@@ -105,23 +107,37 @@ else
   mkdir -p "$DEST"
   cp -R "${SRC}/." "$DEST/"
 fi
-chown -R "${CONSOLE_USER}:staff" "${USER_HOME}/.hermes" 2>/dev/null || chown -R "${CONSOLE_USER}" "${USER_HOME}/.hermes" || true
+mkdir -p "${USER_HOME}/.hermes" "$RUN_DIR"
+chown "${CONSOLE_USER}:staff" "${USER_HOME}/.hermes" 2>/dev/null || chown "${CONSOLE_USER}" "${USER_HOME}/.hermes" || true
+chown -R "${CONSOLE_USER}:staff" "$DEST" "$RUN_DIR" 2>/dev/null || chown -R "${CONSOLE_USER}" "$DEST" "$RUN_DIR" || true
 
-# Run install-for-agent as the user (non-interactive)
-sudo -u "$CONSOLE_USER" -H env \
-  HOME="$USER_HOME" \
-  HERMES_CHROME_ROOT="$DEST" \
-  HERMES_CHROME_RUN="$RUN_DIR" \
-  PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH" \
-  bash "${DEST}/scripts/install-for-agent.sh" || {
-    echo "warn: install-for-agent failed (user can re-run: ${DEST}/scripts/install.sh --dev)"
-  }
+# Run install-for-agent as the console user (prefer launchctl asuser for GUI LaunchAgents context)
+CONSOLE_UID="$(id -u "$CONSOLE_USER" 2>/dev/null || true)"
+if [[ -n "$CONSOLE_UID" ]] && command -v launchctl >/dev/null 2>&1; then
+  launchctl asuser "$CONSOLE_UID" env \
+    HOME="$USER_HOME" \
+    HERMES_CHROME_ROOT="$DEST" \
+    HERMES_CHROME_RUN="$RUN_DIR" \
+    PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH" \
+    bash "${DEST}/scripts/install-for-agent.sh" || {
+      echo "warn: install-for-agent failed via launchctl asuser (user can re-run: ${DEST}/scripts/install.sh --dev)"
+    }
+else
+  sudo -u "$CONSOLE_USER" -H env \
+    HOME="$USER_HOME" \
+    HERMES_CHROME_ROOT="$DEST" \
+    HERMES_CHROME_RUN="$RUN_DIR" \
+    PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH" \
+    bash "${DEST}/scripts/install-for-agent.sh" || {
+      echo "warn: install-for-agent failed (user can re-run: ${DEST}/scripts/install.sh --dev)"
+    }
+fi
 
 # PATH shim for user
 BIN_DIR="${USER_HOME}/.local/bin"
 mkdir -p "$BIN_DIR"
 ln -sfn "${DEST}/scripts/hermes-chrome.sh" "${BIN_DIR}/hermes-chrome"
-chown -R "${CONSOLE_USER}:staff" "${USER_HOME}/.local" 2>/dev/null || true
+chown "${CONSOLE_USER}:staff" "${USER_HOME}/.local" "$BIN_DIR" "${BIN_DIR}/hermes-chrome" 2>/dev/null || chown "${CONSOLE_USER}" "${BIN_DIR}/hermes-chrome" || true
 
 echo "done: companion → $DEST"
 exit 0

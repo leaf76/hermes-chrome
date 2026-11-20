@@ -17,9 +17,9 @@
 | **Companion**（本機端） | 本機 bridge `127.0.0.1:19876` + Native Messaging host + token — 從此 repo **一次**安裝 |
 | **Extension**（瀏覽器端） | 工作區分頁、截圖、輕量 DOM — 只跟本機 bridge 通訊 |
 
-**就緒** = popup 顯示 Bridge **online** + Auth **ready**，且 `hermes-chrome.sh --json ping` 成功。
+**就緒** = Side Panel 顯示 **Bridge Online**，且 `hermes-chrome --json ping` 成功。
 
-若 popup 顯示 **Setup needed**，代表還沒裝 companion 或 bridge 沒起來 — 照 popup 上的指令（或下方第 1 步）即可。**只裝商店版時出現這個畫面是正常的。**
+若顯示 **Bridge Disconnected / Setup needed**，代表還沒裝 companion 或 bridge 沒起來 — 照設定提示（或下方第 1 步）即可。**只裝商店版時出現這個畫面是正常的。**
 
 ### 更新
 
@@ -27,7 +27,7 @@
 
 **Companion**（非 `--dev` 安裝）每天會從官方 GitHub remote **fast-forward** 更新。
 關閉：`hermes-chrome self-update disable`。立刻更新：`hermes-chrome self-update now`。
-兩半版本不一致時 popup 仍會提醒。
+兩半版本不一致時擴充仍會提醒。
 
 ---
 
@@ -105,12 +105,12 @@ MCP 片段：`~/.hermes/run/hermes-chrome/mcp-snippet.json`
 
 ### 2. 安裝 / 啟用 extension
 
-- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **或** Load unpacked → `extension/`（v1.8.7）
+- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **或** Load unpacked → `extension/`（v1.8.9）
 - 需要時允許 **nativeMessaging**
-- **重新載入** extension → **點一下 icon**
-- 等 auto-pair，或按 popup 的 **Pair**
+- **重新載入** extension → **點一下 icon**（開啟 Side Panel）
+- 等 auto-pair，或按 Side Panel / Options 的 **Pair**
 
-正常：Bridge **online**、Auth **ready**。
+正常：Bridge **Online**、Agent **Ready**。
 
 ### 3. 接上你的 agent（可選）
 
@@ -220,7 +220,7 @@ Chrome、bridge、agent 必須在**同一台機器**的 localhost。
 |------|------|
 | Bridge offline | 跑過 `install-for-agent`；點 icon；檢查 Python |
 | Native host not found | 重跑 `install-native-host` / installer；reload extension |
-| 要 Pair | popup → Pair，或 `pair-open` 再 Pair |
+| 要 Pair | Side Panel / Options → Pair，或 `pair-open` 再 Pair |
 | 看不到分頁 | 不在 Hermes group → Options 允許跨 workspace，或把分頁移進 group |
 | MCP 沒工具 | 註冊 `mcp_server.py` 後**重開** agent session |
 
@@ -237,5 +237,5 @@ Chrome、bridge、agent 必須在**同一台機器**的 localhost。
 
 ## Extension 內教學
 
-Popup → **Guide**，或  
+Side Panel 頂部提示條 → **Setup Guide**（或 Options → **Open setup guide**），或  
 `chrome-extension://<id>/help.html`（離線同一份說明）。

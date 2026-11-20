@@ -73,56 +73,78 @@ def run_dir() -> Path:
     ).expanduser()
 
 
-def mcp_entry(root: Path, python: str) -> dict[str, Any]:
+def mcp_entry(root: Path, python: str, *, include_type: bool = False) -> dict[str, Any]:
     mcp_py = str((root / "mcp_server.py").resolve())
-    return {
-        "command": python,
-        "args": [mcp_py],
-        "env": {
-            "HERMES_CHROME_ROOT": str(root.resolve()),
-        },
+    entry: dict[str, Any] = {}
+    if include_type:
+        entry["type"] = "stdio"
+    entry["command"] = python
+    entry["args"] = [mcp_py]
+    entry["env"] = {
+        "HERMES_CHROME_ROOT": str(root.resolve()),
     }
+    return entry
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _toml_str(value: Any) -> str:
+    return json.dumps(str(value))
 
 
 def write_snippet(root: Path, python: str) -> Path:
     rd = run_dir()
     rd.mkdir(parents=True, exist_ok=True)
     path = rd / "mcp-snippet.json"
+    mcp_py_q = _toml_str((root / "mcp_server.py").resolve())
+    root_q = _toml_str(root.resolve())
+    py_q = _toml_str(python)
     payload = {
         "comment": "Paste into Cursor/Claude Desktop mcpServers (or use install-mcp.py)",
         "mcpServers": {
             "hermes-chrome": mcp_entry(root, python),
         },
+        "vscodeServers": {
+            "hermes-chrome": mcp_entry(root, python, include_type=True),
+        },
         "grok_toml_hint": f'''[mcp_servers.hermes-chrome]
-command = "{python}"
-args = ["{(root / "mcp_server.py").resolve()}"]
+command = {py_q}
+args = [{mcp_py_q}]
 enabled = true
 startup_timeout_sec = 45
 tool_timeout_sec = 120
 
 [mcp_servers.hermes-chrome.env]
-HERMES_CHROME_ROOT = "{root.resolve()}"
+HERMES_CHROME_ROOT = {root_q}
 ''',
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
     return path
 
 
 def strip_legacy_toml_blocks(text: str) -> str:
+    def _keep_leading_nl(m: re.Match[str]) -> str:
+        return "\n" if m.group(0).startswith("\n") else ""
+
     for m in LEGACY_MARKERS:
         text = re.sub(
-            rf"\n{m}.*?{re.escape(MARKER_END)}\n?",
-            "\n",
+            rf"(?:^|\n){m}.*?{re.escape(MARKER_END)}\n?",
+            _keep_leading_nl,
             text,
             flags=re.S,
         )
     text = re.sub(
-        rf"\n{re.escape(MARKER_START)}.*?{re.escape(MARKER_END)}\n?",
-        "\n",
+        rf"(?:^|\n){re.escape(MARKER_START)}.*?{re.escape(MARKER_END)}\n?",
+        _keep_leading_nl,
         text,
         flags=re.S,
     )
-    return text
+    return text.lstrip("\n")
 
 
 def install_grok(root: Path, python: str, *, uninstall: bool = False) -> str:
@@ -139,45 +161,47 @@ def install_grok(root: Path, python: str, *, uninstall: bool = False) -> str:
 
     if uninstall:
         if conf.is_file():
-            conf.write_text(text.rstrip() + "\n", encoding="utf-8")
+            out = (text.rstrip() + "\n") if text.strip() else ""
+            _atomic_write_text(conf, out)
         return f"cleaned auto MCP block in {conf}"
 
     # Custom entry we did not write — leave alone
     if re.search(r"\[mcp_servers\.hermes-chrome\]", text):
         return f"skip: custom [mcp_servers.hermes-chrome] in {conf}"
 
-    mcp_py = (root / "mcp_server.py").resolve()
-    block = f"""
-{MARKER_START}
+    mcp_py_q = _toml_str((root / "mcp_server.py").resolve())
+    root_q = _toml_str(root.resolve())
+    py_q = _toml_str(python)
+    block = f"""{MARKER_START}
 [mcp_servers.hermes-chrome]
-command = "{python}"
-args = ["{mcp_py}"]
+command = {py_q}
+args = [{mcp_py_q}]
 enabled = true
 startup_timeout_sec = 45
 tool_timeout_sec = 120
 
 [mcp_servers.hermes-chrome.env]
-HERMES_CHROME_ROOT = "{root.resolve()}"
-{MARKER_END}
-"""
-    new_text = (text.rstrip() + "\n" + block).strip() + "\n"
-    conf.write_text(new_text, encoding="utf-8")
+HERMES_CHROME_ROOT = {root_q}
+{MARKER_END}"""
+    new_text = (text.rstrip() + "\n\n" + block).strip() + "\n"
+    _atomic_write_text(conf, new_text)
     return f"ok: Grok → {conf}"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except json.JSONDecodeError as e:
-        die(f"invalid JSON in {path}: {e}")
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        return {}
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON root in {path} is not an object")
+    return data
 
 
 def _save_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_text(path, json.dumps(data, indent=2) + "\n")
 
 
 def install_json_mcp(
@@ -186,6 +210,7 @@ def install_json_mcp(
     python: str,
     *,
     key: str = "mcpServers",
+    include_type: bool = False,
     uninstall: bool = False,
     create_if_missing: bool = True,
     label: str = "client",
@@ -197,7 +222,11 @@ def install_json_mcp(
     if not path.is_file() and not create_if_missing:
         return f"skip: no {path} ({label})"
 
-    data = _load_json(path) if path.is_file() else {}
+    try:
+        data = _load_json(path) if path.is_file() else {}
+    except (json.JSONDecodeError, ValueError, OSError) as e:
+        return f"skip: invalid JSON in {path} ({label}: {e})"
+
     servers = data.get(key)
     if servers is None:
         servers = {}
@@ -212,7 +241,7 @@ def install_json_mcp(
             return f"removed hermes-chrome from {path}"
         return f"skip: hermes-chrome not in {path}"
 
-    servers["hermes-chrome"] = mcp_entry(root, python)
+    servers["hermes-chrome"] = mcp_entry(root, python, include_type=include_type)
     _save_json(path, data)
     return f"ok: {label} → {path}"
 
@@ -235,6 +264,17 @@ def claude_desktop_paths() -> list[Path]:
     else:
         paths.append(home / ".config" / "Claude" / "claude_desktop_config.json")
     return paths
+
+
+def vscode_mcp_paths() -> list[Path]:
+    cands = [
+        Path.home() / ".config" / "Code" / "User" / "mcp.json",
+        Path.home() / "Library" / "Application Support" / "Code" / "User" / "mcp.json",
+    ]
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        cands.append(Path(appdata) / "Code" / "User" / "mcp.json")
+    return cands
 
 
 def install_all(root: Path, python: str, *, uninstall: bool = False) -> list[str]:
@@ -270,23 +310,18 @@ def install_all(root: Path, python: str, *, uninstall: bool = False) -> list[str
             )
         )
 
-    # VS Code user mcp (newer)
-    vscode_candidates = [
-        Path.home() / ".config" / "Code" / "User" / "mcp.json",
-        Path.home() / "Library" / "Application Support" / "Code" / "User" / "mcp.json",
-    ]
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        vscode_candidates.append(Path(appdata) / "Code" / "User" / "mcp.json")
-    for p in vscode_candidates:
+    # VS Code user mcp ("servers" + "type": "stdio")
+    for p in vscode_mcp_paths():
         if p.parent.is_dir() or (uninstall and p.is_file()):
             results.append(
                 install_json_mcp(
                     p,
                     root,
                     python,
+                    key="servers",
+                    include_type=True,
                     uninstall=uninstall,
-                    create_if_missing=False,
+                    create_if_missing=p.parent.is_dir() and not uninstall,
                     label="VS Code",
                 )
             )
@@ -311,6 +346,9 @@ def status(root: Path) -> None:
     ]
     for p in claude_desktop_paths():
         checks.append(("Claude Desktop", p))
+    for p in vscode_mcp_paths():
+        if p.parent.is_dir() or p.is_file():
+            checks.append(("VS Code", p))
     for label, path in checks:
         has = False
         if path.is_file():

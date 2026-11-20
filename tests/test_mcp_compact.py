@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -312,6 +315,48 @@ class CompactTests(unittest.TestCase):
         open_payload = json.loads(r_open["content"][0]["text"])
         self.assertEqual(open_payload["windowId"], 9001)
         self.assertTrue(open_payload["separateWindow"])
+
+
+class MCPHardeningTests(unittest.TestCase):
+    def test_compact_read_page_respects_text_max(self) -> None:
+        got = m.compact_read_page(
+            {"ok": True, "title": "Example", "url": "https://example.com", "text": "A" * 2000},
+            text_max=500,
+        )
+        self.assertLessEqual(len(got["text"]), 501)
+        self.assertGreaterEqual(len(got["text"]), 500)
+
+    def test_handle_jsonrpc_array_returns_invalid_request(self) -> None:
+        raw_buf = io.BytesIO()
+        fake_stdout = type("_FakeStdout", (), {"buffer": raw_buf})()
+        with mock.patch("sys.stdout", fake_stdout):
+            m._handle([{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
+        payload = raw_buf.getvalue().split(b"\r\n\r\n", 1)[-1].decode("utf-8")
+        resp = json.loads(payload)
+        self.assertEqual(resp["error"]["code"], -32600)
+
+    def test_editor_set_file_path_blocks_sensitive_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / ".env").write_text("SECRET=1", encoding="utf-8")
+            ssh_dir = home / ".ssh"
+            ssh_dir.mkdir()
+            (ssh_dir / "id_rsa").write_text("KEY", encoding="utf-8")
+            run_dir = home / ".hermes" / "run" / "hermes-chrome"
+            run_dir.mkdir(parents=True)
+            (run_dir / "bridge.env").write_text("export HERMES_CHROME_BRIDGE_TOKEN='x'", encoding="utf-8")
+
+            with mock.patch("pathlib.Path.home", return_value=home):
+                for bad in (home / ".env", ssh_dir / "id_rsa", run_dir / "bridge.env"):
+                    res = m.call_tool("hermes_chrome_editor_set", {"tab_id": 1, "file_path": str(bad)})
+                    self.assertTrue(res["isError"], f"expected block for {bad}")
+
+    def test_capture_blocks_invalid_prefer_and_unsafe_out(self) -> None:
+        r_bad_pref = m.call_tool("hermes_chrome_capture", {"prefer": "evil"})
+        self.assertTrue(r_bad_pref["isError"])
+        bad_out = str(Path.home() / ".ssh" / "shot.png")
+        r_bad_out = m.call_tool("hermes_chrome_capture", {"prefer": "auto", "out": bad_out})
+        self.assertTrue(r_bad_out["isError"])
 
 
 if __name__ == "__main__":

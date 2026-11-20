@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import ssl
 import subprocess
@@ -25,33 +26,97 @@ def curl_available() -> bool:
     return bool(shutil.which("curl"))
 
 
+def curl_head_single(url: str, *, timeout_s: float = 8) -> dict[str, Any]:
+    """Use curl -I without following redirects so caller can validate each hop."""
+    curl = shutil.which("curl")
+    if not curl:
+        raise RuntimeError("curl not found")
+    max_t = str(max(1, int(timeout_s)))
+    conn_t = str(max(1, int(min(timeout_s, 30))))
+    proc = subprocess.run(
+        [
+            curl,
+            "-sS",
+            "-g",
+            "--proto",
+            "=http,https",
+            "--proto-redir",
+            "=http,https",
+            "-I",
+            "-o",
+            os.devnull,
+            "-w",
+            "%{http_code}\n%{redirect_url}\n%{content_type}\n",
+            "--connect-timeout",
+            conn_t,
+            "--max-time",
+            max_t,
+            "--",
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(5.0, timeout_s + 5),
+        check=False,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or f"curl exit {proc.returncode}").strip()
+        raise RuntimeError(err)
+    raw_lines = (proc.stdout or "").splitlines()
+    if len(raw_lines) < 3:
+        raise RuntimeError(f"unexpected curl -I output: {proc.stdout!r}")
+    status_s, redirect_url, ctype = raw_lines[-3:]
+    try:
+        status = int(status_s.strip())
+    except ValueError as e:
+        raise RuntimeError(f"unexpected curl -I status: {proc.stdout!r}") from e
+    return {
+        "status": status,
+        "location": redirect_url.strip() or None,
+        "content_type": ctype.strip() or None,
+        "mode": "curl_head_single",
+    }
+
+
 def curl_head_chain(url: str, *, max_redirs: int = 8, timeout_s: float = 15) -> dict[str, Any]:
     """Use curl -I -L to resolve redirects with system certs."""
     curl = shutil.which("curl")
     if not curl:
         raise RuntimeError("curl not found")
-    # -w writes JSON meta after headers on stdout mixed — use -D headers -o /dev/null -w
+    max_t = str(max(1, int(timeout_s)))
+    conn_t = str(max(1, int(min(timeout_s, 30))))
+    # -w writes JSON meta after headers on stdout mixed — use -D headers -o os.devnull -w
     proc = subprocess.run(
         [
             curl,
             "-sS",
+            "-g",
+            "--proto",
+            "=http,https",
+            "--proto-redir",
+            "=http,https",
             "-L",
             "--max-redirs",
             str(max_redirs),
             "-I",  # HEAD
             "-o",
-            "/dev/null",
+            os.devnull,
             "-w",
             "%{http_code}\n%{url_effective}\n%{num_redirects}\n",
             "--connect-timeout",
-            str(int(min(timeout_s, 30))),
+            conn_t,
             "--max-time",
-            str(int(timeout_s)),
+            max_t,
+            "--",
             url,
         ],
         capture_output=True,
         text=True,
-        timeout=timeout_s + 5,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(5.0, timeout_s + 5),
         check=False,
     )
     if proc.returncode != 0:
@@ -84,19 +149,27 @@ def curl_download(
     *,
     max_bytes: int,
     timeout_s: float = 120,
+    follow_redirects: bool = True,
 ) -> dict[str, Any]:
     """Download with curl to dest; enforce max size via -m and post-check size."""
     curl = shutil.which("curl")
     if not curl:
         raise RuntimeError("curl not found")
-    proc = subprocess.run(
+    max_t = str(max(1, int(timeout_s)))
+    cmd = [
+        curl,
+        "-sS",
+        "-g",
+        "--proto",
+        "=http,https",
+        "--proto-redir",
+        "=http,https",
+        "--fail",
+    ]
+    if follow_redirects:
+        cmd.extend(["-L", "--max-redirs", "8"])
+    cmd.extend(
         [
-            curl,
-            "-sS",
-            "-L",
-            "--fail",
-            "--max-redirs",
-            "8",
             "-o",
             dest,
             "-w",
@@ -104,23 +177,27 @@ def curl_download(
             "--connect-timeout",
             "15",
             "--max-time",
-            str(int(timeout_s)),
+            max_t,
             # soft limit: curl has --max-filesize
             "--max-filesize",
             str(max_bytes),
+            "--",
             url,
-        ],
+        ]
+    )
+    proc = subprocess.run(
+        cmd,
         capture_output=True,
         text=True,
-        timeout=timeout_s + 10,
+        encoding="utf-8",
+        errors="replace",
+        timeout=max(5.0, timeout_s + 10),
         check=False,
     )
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or f"curl exit {proc.returncode}").strip()
         raise RuntimeError(err)
-    lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip() != ""]
     # write-out is last lines; content_type may be empty line
-    # Re-parse more carefully from raw stdout
     raw_lines = (proc.stdout or "").splitlines()
     # take last 4 lines as write-out
     if len(raw_lines) < 4:
@@ -146,7 +223,7 @@ def urllib_open(url: str, *, timeout: float = 30, method: str = "GET"):
         url,
         method=method,
         headers={
-            "User-Agent": "hermes-chrome/1.4 (+local)",
+            "User-Agent": "hermes-chrome/1.8.9 (+local)",
             "Accept": "*/*",
         },
     )

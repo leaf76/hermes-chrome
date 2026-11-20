@@ -26,12 +26,15 @@ Auth (default ON):
 
 from __future__ import annotations
 
+import contextlib
 import json
+import math
 import os
 import queue
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -40,7 +43,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT / "lib") not in sys.path:
@@ -77,21 +80,29 @@ _RESULT_TTL_S = float(os.environ.get("HERMES_CHROME_BRIDGE_RESULT_TTL", "120") o
 _PAIRING_WINDOW_S = float(
     os.environ.get("HERMES_CHROME_BRIDGE_PAIRING_WINDOW", "300") or 300
 )
+_MAX_RESULTS_TOTAL_BYTES = 64 * 1024 * 1024
 
 _cmd_q: queue.Queue = queue.Queue(maxsize=max(1, _MAX_QUEUE))
-_results: dict[str, tuple[float, dict]] = {}  # id -> (expires_at, payload)
+_results: dict[str, tuple[float, int, dict]] = {}  # id -> (expires_at_mono, approx_bytes, payload)
 _results_cv = threading.Condition()
-_started_at = time.time()
+_started_at = time.monotonic()
 _last_poll_at: float | None = None
 _extension_version: str | None = None
 _extension_name: str | None = None
 _state_lock = threading.Lock()
+_config_lock = threading.Lock()
+_cli_prompt_sem = threading.BoundedSemaphore(2)
 _pairing_until = _started_at + max(30.0, _PAIRING_WINDOW_S)
 _pair_used = False
 # Quiet period before optional auto-reopen (only if AUTO_REPAIR enabled).
 _PAIRING_REOPEN_AFTER_S = float(
     os.environ.get("HERMES_CHROME_BRIDGE_PAIRING_REOPEN_S", "20") or 20
 )
+
+_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$")
+_PROVIDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
+_VALID_REASONING = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
 
 
 def _env_truthy(name: str) -> bool:
@@ -129,6 +140,10 @@ def _run_dir() -> Path:
     )
     p = Path(run)
     p.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(p, 0o700)
+    except OSError:
+        pass
     return p
 
 
@@ -167,12 +182,25 @@ def _load_token_from_env_file() -> str:
 
 def _write_token_env_file(token: str) -> Path:
     path = _env_file()
-    # Restrictive perms
-    path.write_text(
+    content = (
         "# Hermes Chrome bridge auth (local only). Auto-managed; do not commit.\n"
-        f"export HERMES_CHROME_BRIDGE_TOKEN='{token}'\n",
-        encoding="utf-8",
-    )
+        f"export HERMES_CHROME_BRIDGE_TOKEN='{token}'\n"
+    ).encode("utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, path)
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -182,11 +210,7 @@ def _write_token_env_file(token: str) -> Path:
 
 def _resolve_token() -> tuple[str, str]:
     """Return (token, source). Empty token only if ALLOW_NO_AUTH."""
-    allow_no = os.environ.get("HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH", "").strip() in (
-        "1",
-        "true",
-        "yes",
-    )
+    allow_no = _env_truthy("HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH")
     env_tok = (
         os.environ.get("HERMES_CHROME_BRIDGE_TOKEN")
         or os.environ.get("HERMES_TABGROUP_BRIDGE_TOKEN")
@@ -205,7 +229,8 @@ def _resolve_token() -> tuple[str, str]:
     return tok, "generated"
 
 
-TOKEN, TOKEN_SOURCE = _resolve_token()
+TOKEN = ""
+TOKEN_SOURCE = "uninitialized"
 
 
 def _note_extension_seen(
@@ -213,7 +238,7 @@ def _note_extension_seen(
 ) -> None:
     global _last_poll_at, _extension_version, _extension_name, _pair_used
     with _state_lock:
-        _last_poll_at = time.time()
+        _last_poll_at = time.monotonic()
         if version:
             _extension_version = str(version)[:32]
         if name:
@@ -223,8 +248,8 @@ def _note_extension_seen(
             _pair_used = True
 
 
-def _maybe_reopen_pairing() -> None:
-    """Optionally re-open pairing when extension is disconnected.
+def _maybe_reopen_pairing_locked(now: float | None = None) -> None:
+    """Optionally re-open pairing when extension is disconnected (caller holds _state_lock).
 
     Default OFF. Enable with HERMES_CHROME_AUTO_REPAIR=1 (or legacy
     HERMES_CHROME_BRIDGE_AUTO_REPAIR=1). Prefer explicit pair-open after token
@@ -238,46 +263,47 @@ def _maybe_reopen_pairing() -> None:
         or _env_truthy("HERMES_CHROME_BRIDGE_AUTO_REPAIR")
     ):
         return
-    with _state_lock:
-        last = _last_poll_at
-        age = None if last is None else time.time() - last
-        disconnected = age is None or age > _CONNECTED_MAX_AGE_S
-        if not disconnected:
-            return
-        # Only reopen after a short quiet period (avoid flapping during reloads).
-        quiet_ok = age is None or age >= _PAIRING_REOPEN_AFTER_S
-        if not quiet_ok:
-            return
-        open_now = (not _pair_used) and time.time() < _pairing_until
-        if open_now:
-            return
-        _pair_used = False
-        _pairing_until = time.time() + max(60.0, _PAIRING_WINDOW_S)
+    now = time.monotonic() if now is None else now
+    last = _last_poll_at
+    age = None if last is None else now - last
+    disconnected = age is None or age > _CONNECTED_MAX_AGE_S
+    if not disconnected:
+        return
+    # Only reopen after a short quiet period (avoid flapping during reloads).
+    quiet_ok = age is None or age >= _PAIRING_REOPEN_AFTER_S
+    if not quiet_ok:
+        return
+    open_now = (not _pair_used) and now < _pairing_until
+    if open_now:
+        return
+    _pair_used = False
+    _pairing_until = now + max(60.0, _PAIRING_WINDOW_S)
 
 
 def _purge_results(now: float | None = None) -> None:
-    now = time.time() if now is None else now
-    dead = [k for k, (exp, _) in _results.items() if exp <= now]
+    now = time.monotonic() if now is None else now
+    dead = [k for k, (exp, _sz, _pl) in _results.items() if exp <= now]
     for k in dead:
         _results.pop(k, None)
 
 
 def _health_payload(*, detail: bool = False) -> dict:
     # Do not auto-reopen pairing from public health probes.
-    if detail:
-        _maybe_reopen_pairing()
+    now = time.monotonic()
     with _state_lock:
+        if detail:
+            _maybe_reopen_pairing_locked(now)
         last = _last_poll_at
         ver = _extension_version
         name = _extension_name
-        pairing = (not _pair_used) and time.time() < _pairing_until and bool(TOKEN)
-    age = None if last is None else round(time.time() - last, 1)
+        pairing = (not _pair_used) and now < _pairing_until and bool(TOKEN)
+    age = None if last is None else round(now - last, 1)
     connected = age is not None and age <= _CONNECTED_MAX_AGE_S
     # Public: liveness only (no pairing_open / version / limits recon).
     public = {
         "ok": True,
         "service": "hermes-chrome-bridge",
-        "uptime_s": round(time.time() - _started_at, 1),
+        "uptime_s": round(now - _started_at, 1),
         "auth_required": bool(TOKEN),
         "auth": bool(TOKEN),
         "extension_connected": connected,
@@ -315,9 +341,8 @@ def _cors_origin(handler: BaseHTTPRequestHandler) -> str | None:
     ext_id = _extension_id_from_origin(origin)
     if not ext_id:
         return None
-    if ext_id not in _allowed_extension_ids():
-        return None
-    return f"chrome-extension://{ext_id}"
+    allowed = {eid: f"chrome-extension://{eid}" for eid in _allowed_extension_ids()}
+    return allowed.get(ext_id)
 
 
 def _set_cors(handler: BaseHTTPRequestHandler) -> None:
@@ -348,7 +373,45 @@ def _json_response(
 
 def _client_is_loopback(handler: BaseHTTPRequestHandler) -> bool:
     addr = handler.client_address[0] if handler.client_address else ""
-    return addr in ("127.0.0.1", "::1", "localhost")
+    return addr in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1")
+
+
+def _parse_host_header(raw_host: str) -> str:
+    h = (raw_host or "").strip().lower()
+    if not h:
+        return ""
+    if h.startswith("["):
+        end = h.find("]")
+        return h[1:end] if end != -1 else ""
+    if ":" in h:
+        return h.partition(":")[0]
+    return h
+
+
+def _host_allowed(handler: BaseHTTPRequestHandler) -> bool:
+    hostname = _parse_host_header(handler.headers.get("Host") or "")
+    if not hostname:
+        return False
+    allowed = {"127.0.0.1", "localhost", "::1"}
+    if _env_truthy("HERMES_CHROME_BRIDGE_ALLOW_NONLOCAL"):
+        allowed.add(HOST.strip("[]").lower())
+    return hostname in allowed
+
+
+def _parse_float(raw: str | None, default: float, lo: float, hi: float) -> float:
+    if raw is None or raw == "":
+        return default
+    val = float(raw)
+    if not math.isfinite(val):
+        raise ValueError("non-finite float")
+    return max(lo, min(val, hi))
+
+
+def _parse_int(raw: str | None, default: int, lo: int, hi: int) -> int:
+    if raw is None or raw == "":
+        return default
+    val = int(raw)
+    return max(lo, min(val, hi))
 
 
 def _token_ok(handler: BaseHTTPRequestHandler, qs: dict) -> bool:
@@ -409,24 +472,61 @@ def _get_hermes_sessions(limit: int = 30) -> list[dict]:
     if not db_path:
         return []
     try:
-        uri = f"file:{db_path.as_posix()}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, title, started_at,
-                   COALESCE(last_activity_at, started_at) as last_activity,
-                   message_count, model
-            FROM sessions
-            WHERE archived = 0
-            ORDER BY last_activity DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
-        rows = [
-            {
+        uri = f"{db_path.as_uri()}?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, title, started_at,
+                       COALESCE(last_activity_at, started_at) as last_activity,
+                       message_count, model
+                FROM sessions
+                WHERE archived = 0
+                ORDER BY last_activity DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [
+                {
+                    "id": r["id"],
+                    "title": r["title"] or "Untitled",
+                    "started_at": r["started_at"],
+                    "last_activity": r["last_activity"],
+                    "message_count": r["message_count"],
+                    "model": r["model"] or "",
+                }
+                for r in cur.fetchall()
+            ]
+    except Exception:
+        return []
+
+
+def _get_hermes_session_info(session_id: str) -> dict | None:
+    db_path = _hermes_state_db_path()
+    if not db_path or not session_id:
+        return None
+    try:
+        uri = f"{db_path.as_uri()}?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, title, started_at,
+                       COALESCE(last_activity_at, started_at) as last_activity,
+                       message_count, model
+                FROM sessions
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (session_id,),
+            )
+            r = cur.fetchone()
+            if not r:
+                return None
+            return {
                 "id": r["id"],
                 "title": r["title"] or "Untitled",
                 "started_at": r["started_at"],
@@ -434,12 +534,8 @@ def _get_hermes_sessions(limit: int = 30) -> list[dict]:
                 "message_count": r["message_count"],
                 "model": r["model"] or "",
             }
-            for r in cur.fetchall()
-        ]
-        conn.close()
-        return rows
     except Exception:
-        return []
+        return None
 
 
 def _get_hermes_messages(session_id: str, limit: int = 150) -> list[dict]:
@@ -447,39 +543,42 @@ def _get_hermes_messages(session_id: str, limit: int = 150) -> list[dict]:
     if not db_path or not session_id:
         return []
     try:
-        uri = f"file:{db_path.as_posix()}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, role, content, reasoning, tool_calls, tool_name, timestamp
-            FROM messages
-            WHERE session_id = ? AND active = 1
-            ORDER BY timestamp ASC
-            LIMIT ?
-            """,
-            (session_id, limit),
-        )
-        rows = []
-        for r in cur.fetchall():
-            tool_calls = None
-            if r["tool_calls"]:
-                try:
-                    tool_calls = json.loads(r["tool_calls"])
-                except Exception:
-                    tool_calls = r["tool_calls"]
-            rows.append({
-                "id": r["id"],
-                "role": r["role"],
-                "content": r["content"] or "",
-                "reasoning": r["reasoning"] or "",
-                "tool_calls": tool_calls,
-                "tool_name": r["tool_name"] or "",
-                "timestamp": r["timestamp"],
-            })
-        conn.close()
-        return rows
+        uri = f"{db_path.as_uri()}?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, role, content, reasoning, tool_calls, tool_name, timestamp
+                FROM (
+                    SELECT id, role, content, reasoning, tool_calls, tool_name, timestamp
+                    FROM messages
+                    WHERE session_id = ? AND active = 1
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT ?
+                )
+                ORDER BY timestamp ASC, id ASC
+                """,
+                (session_id, limit),
+            )
+            rows = []
+            for r in cur.fetchall():
+                tool_calls = None
+                if r["tool_calls"]:
+                    try:
+                        tool_calls = json.loads(r["tool_calls"])
+                    except Exception:
+                        tool_calls = r["tool_calls"]
+                rows.append({
+                    "id": r["id"],
+                    "role": r["role"],
+                    "content": r["content"] or "",
+                    "reasoning": r["reasoning"] or "",
+                    "tool_calls": tool_calls,
+                    "tool_name": r["tool_name"] or "",
+                    "timestamp": r["timestamp"],
+                })
+            return rows
     except Exception:
         return []
 
@@ -558,29 +657,98 @@ def _get_hermes_models_info() -> dict:
     }
 
 
+def _replace_yaml_key(text: str, key: str, new_val: str) -> str:
+    """Replace key within top-level `model:` section when present, else first match."""
+    pattern = re.compile(rf"(^\s*{re.escape(key)}:\s*)[^\s#]+", re.MULTILINE)
+    lines = text.splitlines(keepends=True)
+    in_model_block = False
+    for idx, line in enumerate(lines):
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(stripped)
+        if indent == 0:
+            in_model_block = bool(re.match(r"^model:\s*(?:#.*)?$", stripped))
+            if in_model_block:
+                continue
+        if in_model_block:
+            replaced, n = pattern.subn(lambda m: f"{m.group(1)}{new_val}", line, count=1)
+            if n:
+                lines[idx] = replaced
+                return "".join(lines)
+    return pattern.sub(lambda m: f"{m.group(1)}{new_val}", text, count=1)
+
+
 def _update_hermes_config(data: dict) -> dict:
     config_path = Path.home() / ".hermes" / "config.yaml"
     if not config_path.is_file():
         return {"saved": False, "error": "config file not found"}
-    try:
-        text = config_path.read_text(encoding="utf-8")
-        updated_fields = {}
-        if "model" in data and isinstance(data["model"], str) and data["model"].strip():
-            new_m = data["model"].strip()
-            text = re.sub(r"(^\s*default:\s*)[^\s#]+", rf"\g<1>{new_m}", text, count=1, flags=re.MULTILINE)
-            updated_fields["model"] = new_m
-        if "provider" in data and isinstance(data["provider"], str) and data["provider"].strip():
-            new_p = data["provider"].strip()
-            text = re.sub(r"(^\s*provider:\s*)[^\s#]+", rf"\g<1>{new_p}", text, count=1, flags=re.MULTILINE)
-            updated_fields["provider"] = new_p
-        if "reasoning_effort" in data and isinstance(data["reasoning_effort"], str) and data["reasoning_effort"].strip():
-            new_e = data["reasoning_effort"].strip().lower()
-            text = re.sub(r"(^\s*reasoning_effort:\s*)[^\s#]+", rf"\g<1>{new_e}", text, count=1, flags=re.MULTILINE)
-            updated_fields["reasoning_effort"] = new_e
-        config_path.write_text(text, encoding="utf-8")
-        return {"saved": True, "fields": updated_fields}
-    except Exception as e:
-        return {"saved": False, "error": str(e)}
+
+    new_m: str | None = None
+    new_p: str | None = None
+    new_e: str | None = None
+
+    if "model" in data and data["model"] is not None:
+        if not isinstance(data["model"], str) or not _MODEL_RE.fullmatch(data["model"].strip()):
+            return {"saved": False, "error": "invalid model identifier"}
+        new_m = data["model"].strip()
+    if "provider" in data and data["provider"] is not None:
+        if not isinstance(data["provider"], str):
+            return {"saved": False, "error": "invalid provider identifier"}
+        cand_p = data["provider"].strip()
+        if not _PROVIDER_RE.fullmatch(cand_p) or cand_p.lower() == "custom":
+            return {"saved": False, "error": "invalid provider identifier"}
+        new_p = cand_p
+    if "reasoning_effort" in data and data["reasoning_effort"] is not None:
+        if not isinstance(data["reasoning_effort"], str):
+            return {"saved": False, "error": "invalid reasoning_effort"}
+        cand_e = data["reasoning_effort"].strip().lower()
+        if cand_e not in _VALID_REASONING:
+            return {"saved": False, "error": "invalid reasoning_effort"}
+        new_e = cand_e
+
+    with _config_lock:
+        try:
+            text = config_path.read_text(encoding="utf-8")
+            updated_fields = {}
+            if new_m is not None:
+                text = _replace_yaml_key(text, "default", new_m)
+                updated_fields["model"] = new_m
+            if new_p is not None:
+                text = _replace_yaml_key(text, "provider", new_p)
+                updated_fields["provider"] = new_p
+            if new_e is not None:
+                text = _replace_yaml_key(text, "reasoning_effort", new_e)
+                updated_fields["reasoning_effort"] = new_e
+            tmp = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, config_path)
+            return {"saved": True, "fields": updated_fields}
+        except Exception as e:
+            return {"saved": False, "error": str(e)}
+
+
+def _resolve_hermes_binary() -> tuple[str | None, str | None]:
+    candidates: list[str] = []
+    which_bin = shutil.which("hermes")
+    if which_bin:
+        candidates.append(which_bin)
+    if os.name == "nt":
+        local_app = os.environ.get("LOCALAPPDATA") or ""
+        if local_app:
+            candidates.append(str(Path(local_app) / "hermes" / "bin" / "hermes.exe"))
+        candidates.append(str(Path.home() / ".local" / "bin" / "hermes.exe"))
+    else:
+        candidates.append(os.path.expanduser("~/.local/bin/hermes"))
+
+    for cand in candidates:
+        p = Path(cand)
+        if not p.is_file():
+            continue
+        if os.name == "nt" and p.suffix.lower() in {".cmd", ".bat"}:
+            return None, "refusing Windows .cmd/.bat hermes shim; install native hermes.exe"
+        return str(p.resolve()), None
+    return None, "Hermes CLI binary not found on system"
 
 
 def _run_hermes_cli_prompt(
@@ -590,29 +758,71 @@ def _run_hermes_cli_prompt(
     provider: str | None = None,
     reasoning: str | None = None,
 ) -> dict:
-    hermes_bin = shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
-    if not os.path.isfile(hermes_bin) and not shutil.which("hermes"):
-        return {"ok": False, "error": "Hermes CLI binary not found on system"}
+    if not isinstance(prompt, str) or not prompt.strip() or "\x00" in prompt:
+        return {"ok": False, "error": "invalid prompt"}
+    if len(prompt) > 32000:
+        return {"ok": False, "error": "prompt exceeds 32000 chars"}
 
-    cmd = [hermes_bin, "-z", prompt]
-    if session_id and session_id not in ("__auto__", "__new__"):
-        cmd.extend(["--resume", session_id])
-    elif session_id == "__auto__":
-        cmd.extend(["--resume", "latest"])
+    hermes_bin, bin_err = _resolve_hermes_binary()
+    if not hermes_bin:
+        return {"ok": False, "error": bin_err or "Hermes CLI binary not found on system"}
 
-    if model and isinstance(model, str) and model.strip():
-        cmd.extend(["-m", model.strip()])
+    safe_prompt = f" {prompt}" if prompt.startswith("-") else prompt
+    args: list[str] = ["-z", safe_prompt]
 
-    if provider and isinstance(provider, str) and provider.strip():
-        cmd.extend(["--provider", provider.strip()])
+    if session_id is not None:
+        if not isinstance(session_id, str):
+            return {"ok": False, "error": "invalid session_id"}
+        sid = session_id.strip()
+        if sid == "__auto__":
+            args.extend(["--resume", "latest"])
+        elif sid and sid != "__new__":
+            if not _SESSION_ID_RE.fullmatch(sid):
+                return {"ok": False, "error": "invalid session_id format"}
+            args.extend(["--resume", sid])
 
-    if reasoning and isinstance(reasoning, str) and reasoning.strip().lower() not in ("none", "off"):
-        cmd.extend(["--reasoning", reasoning.strip().lower()])
+    if model is not None:
+        if not isinstance(model, str):
+            return {"ok": False, "error": "invalid model"}
+        m_val = model.strip()
+        if m_val:
+            if not _MODEL_RE.fullmatch(m_val):
+                return {"ok": False, "error": "invalid model identifier"}
+            args.extend(["-m", m_val])
 
+    if provider is not None:
+        if not isinstance(provider, str):
+            return {"ok": False, "error": "invalid provider"}
+        p_val = provider.strip()
+        if p_val and p_val.lower() != "custom":
+            if not _PROVIDER_RE.fullmatch(p_val):
+                return {"ok": False, "error": "invalid provider identifier"}
+            args.extend(["--provider", p_val])
+
+    if reasoning is not None:
+        if not isinstance(reasoning, str):
+            return {"ok": False, "error": "invalid reasoning_effort"}
+        r_val = reasoning.strip().lower()
+        if r_val and r_val not in ("none", "off"):
+            if r_val not in _VALID_REASONING:
+                return {"ok": False, "error": "invalid reasoning_effort"}
+            args.extend(["--reasoning", r_val])
+
+    if not _cli_prompt_sem.acquire(blocking=False):
+        return {"ok": False, "error": "Hermes CLI busy; another prompt is already running"}
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        out = proc.stdout.strip()
-        err = proc.stderr.strip()
+        proc = subprocess.run(
+            [hermes_bin, *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            timeout=120,
+            shell=False,
+        )
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
         if proc.returncode != 0:
             return {"ok": False, "error": err or f"Hermes exited with code {proc.returncode}"}
         return {"ok": True, "response": out}
@@ -620,13 +830,35 @@ def _run_hermes_cli_prompt(
         return {"ok": False, "error": "Hermes CLI execution timed out after 120s"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    finally:
+        _cli_prompt_sem.release()
+
+
+class _BridgeServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class Handler(BaseHTTPRequestHandler):
+    def setup(self) -> None:
+        super().setup()
+        try:
+            self.request.settimeout(15.0)
+        except OSError:
+            pass
+
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         pass
 
     def do_OPTIONS(self) -> None:
+        if not _host_allowed(self):
+            _json_response(self, 403, {"ok": False, "error": "invalid host"})
+            return
         # Preflight only for allowed extension origins
         if _cors_origin(self) is None and (self.headers.get("Origin") or ""):
             self.send_response(403)
@@ -635,6 +867,9 @@ class Handler(BaseHTTPRequestHandler):
         _json_response(self, 204, None)
 
     def do_GET(self) -> None:
+        if not _host_allowed(self):
+            _json_response(self, 403, {"ok": False, "error": "invalid host"})
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
@@ -654,8 +889,11 @@ class Handler(BaseHTTPRequestHandler):
             ver = (qs.get("version") or [None])[0]
             name = (qs.get("extension") or [None])[0]
             _note_extension_seen(version=ver, name=name or "hermes-chrome")
-            timeout = float(qs.get("timeout", ["25"])[0] or 25)
-            timeout = max(1.0, min(timeout, 55.0))
+            try:
+                timeout = _parse_float(qs.get("timeout", ["25"])[0], 25.0, 1.0, 55.0)
+            except ValueError:
+                _json_response(self, 400, {"ok": False, "error": "invalid timeout"})
+                return
             try:
                 cmd = _cmd_q.get(timeout=timeout)
             except queue.Empty:
@@ -664,25 +902,37 @@ class Handler(BaseHTTPRequestHandler):
                 _set_cors(self)
                 self.end_headers()
                 return
-            _json_response(self, 200, cmd)
+            try:
+                _json_response(self, 200, cmd)
+            except OSError:
+                try:
+                    _cmd_q.put_nowait(cmd)
+                except queue.Full:
+                    pass
             return
 
         if path.startswith("/v1/result/"):
             rid = path[len("/v1/result/") :].strip("/")
-            timeout = float(qs.get("timeout", ["30"])[0] or 30)
-            timeout = max(1.0, min(timeout, 120.0))
-            deadline = time.time() + timeout
+            try:
+                timeout = _parse_float(qs.get("timeout", ["30"])[0], 30.0, 1.0, 120.0)
+            except ValueError:
+                _json_response(self, 400, {"ok": False, "error": "invalid timeout"})
+                return
+            deadline = time.monotonic() + timeout
+            found_payload: dict | None = None
             with _results_cv:
                 while True:
                     _purge_results()
                     if rid in _results:
-                        _exp, payload = _results.pop(rid)
-                        _json_response(self, 200, payload)
-                        return
-                    remaining = deadline - time.time()
+                        _exp, _sz, found_payload = _results.pop(rid)
+                        break
+                    remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
                     _results_cv.wait(timeout=max(0.05, remaining))
+            if found_payload is not None:
+                _json_response(self, 200, found_payload)
+                return
             _json_response(
                 self,
                 408,
@@ -691,8 +941,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/hermes/sessions":
-            limit = int((qs.get("limit") or ["30"])[0])
-            limit = max(1, min(limit, 100))
+            try:
+                limit = _parse_int((qs.get("limit") or ["30"])[0], 30, 1, 100)
+            except ValueError:
+                _json_response(self, 400, {"ok": False, "error": "invalid limit"})
+                return
             sessions = _get_hermes_sessions(limit=limit)
             _json_response(self, 200, {"ok": True, "sessions": sessions})
             return
@@ -700,11 +953,19 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/v1/hermes/sessions/") and path.endswith("/messages"):
             parts = path.strip("/").split("/")
             if len(parts) == 5 and parts[0] == "v1" and parts[1] == "hermes" and parts[2] == "sessions" and parts[4] == "messages":
-                sid = parts[3]
-                limit = int((qs.get("limit") or ["150"])[0])
-                limit = max(1, min(limit, 300))
+                sid = unquote(parts[3])
+                try:
+                    limit = _parse_int((qs.get("limit") or ["150"])[0], 150, 1, 300)
+                except ValueError:
+                    _json_response(self, 400, {"ok": False, "error": "invalid limit"})
+                    return
                 messages = _get_hermes_messages(session_id=sid, limit=limit)
-                _json_response(self, 200, {"ok": True, "session_id": sid, "messages": messages})
+                session_info = _get_hermes_session_info(sid)
+                _json_response(
+                    self,
+                    200,
+                    {"ok": True, "session_id": sid, "session": session_info, "messages": messages},
+                )
                 return
 
         if path == "/v1/hermes/models":
@@ -716,6 +977,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         global _pair_used, _pairing_until
+        if not _host_allowed(self):
+            _json_response(self, 403, {"ok": False, "error": "invalid host"})
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
@@ -750,12 +1014,14 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             with _state_lock:
-                open_pair = (not _pair_used) and time.time() < _pairing_until
-            if not open_pair:
-                # Optional auto-reopen only when HERMES_CHROME_AUTO_REPAIR=1.
-                _maybe_reopen_pairing()
-                with _state_lock:
-                    open_pair = (not _pair_used) and time.time() < _pairing_until
+                now = time.monotonic()
+                open_pair = (not _pair_used) and now < _pairing_until
+                if not open_pair:
+                    # Optional auto-reopen only when HERMES_CHROME_AUTO_REPAIR=1.
+                    _maybe_reopen_pairing_locked(now)
+                    open_pair = (not _pair_used) and now < _pairing_until
+                if open_pair:
+                    _pair_used = True
             if not open_pair:
                 _json_response(
                     self,
@@ -767,15 +1033,14 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
                 return
-            with _state_lock:
-                _pair_used = True
+            url_host = f"[{HOST}]" if ":" in HOST and not HOST.startswith("[") else HOST
             _json_response(
                 self,
                 200,
                 {
                     "ok": True,
                     "token": TOKEN,
-                    "bridge": f"http://{HOST}:{PORT}",
+                    "bridge": f"http://{url_host}:{PORT}",
                     "hint": "Saved in extension storage; do not share this token",
                     "auto": True,
                 },
@@ -784,19 +1049,19 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/pair-open":
             # CLI re-opens pairing window (requires existing token auth, or no-auth mode).
-            raw = _read_body(self, max_bytes=4096)
-            if raw is None:
-                _json_response(self, 413, {"ok": False, "error": "body too large"})
-                return
             if not _client_is_loopback(self):
                 _json_response(self, 403, {"ok": False, "error": "loopback only"})
                 return
             if TOKEN and not _token_ok(self, qs):
                 _json_response(self, 401, {"ok": False, "error": "unauthorized"})
                 return
+            raw = _read_body(self, max_bytes=4096)
+            if raw is None:
+                _json_response(self, 413, {"ok": False, "error": "body too large"})
+                return
             with _state_lock:
                 _pair_used = False
-                _pairing_until = time.time() + max(30.0, _PAIRING_WINDOW_S)
+                _pairing_until = time.monotonic() + max(30.0, _PAIRING_WINDOW_S)
             _json_response(
                 self,
                 200,
@@ -809,7 +1074,20 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # Remaining POSTs require token when configured
+        # Auth & Content-Type check BEFORE reading potentially large request bodies.
+        if not TOKEN:
+            ctype = (self.headers.get("Content-Type") or "").strip().lower()
+            if not ctype.startswith("application/json"):
+                _json_response(
+                    self,
+                    415,
+                    {"ok": False, "error": "Content-Type application/json required"},
+                )
+                return
+        elif not _token_ok(self, qs):
+            _json_response(self, 401, {"ok": False, "error": "unauthorized"})
+            return
+
         max_body = (
             _MAX_RESULT_BYTES if path == "/v1/result" else _MAX_BODY_BYTES
         )
@@ -833,12 +1111,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             body = json.loads(raw.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             _json_response(self, 400, {"ok": False, "error": "invalid json"})
-            return
-
-        if not _token_ok(self, qs):
-            _json_response(self, 401, {"ok": False, "error": "unauthorized"})
             return
 
         if path == "/v1/hello":
@@ -879,18 +1153,26 @@ class Handler(BaseHTTPRequestHandler):
                 _json_response(self, 400, {"ok": False, "error": "id required"})
                 return
             rid = str(body["id"])
-            # Prevent unbounded result id growth / spoof overwrite of fresh results
+            payload_bytes = len(raw)
+            reject_code: int | None = None
+            reject_err: str | None = None
             with _results_cv:
-                _purge_results()
-                if len(_results) >= _MAX_QUEUE * 4:
-                    _json_response(
-                        self,
-                        503,
-                        {"ok": False, "error": "result store full"},
-                    )
-                    return
-                _results[rid] = (time.time() + _RESULT_TTL_S, body)
-                _results_cv.notify_all()
+                now = time.monotonic()
+                _purge_results(now)
+                if rid in _results:
+                    reject_code = 409
+                    reject_err = "result already exists"
+                else:
+                    total_bytes = sum(sz for _e, sz, _p in _results.values())
+                    if len(_results) >= _MAX_QUEUE * 4 or (total_bytes + payload_bytes) > _MAX_RESULTS_TOTAL_BYTES:
+                        reject_code = 503
+                        reject_err = "result store full"
+                    else:
+                        _results[rid] = (now + _RESULT_TTL_S, payload_bytes, body)
+                        _results_cv.notify_all()
+            if reject_code is not None:
+                _json_response(self, reject_code, {"ok": False, "error": reject_err})
+                return
             _json_response(self, 200, {"ok": True})
             return
 
@@ -899,14 +1181,14 @@ class Handler(BaseHTTPRequestHandler):
                 _json_response(self, 400, {"ok": False, "error": "object required"})
                 return
             updated = _update_hermes_config(body)
-            _json_response(self, 200, {"ok": True, "updated": updated})
+            _json_response(self, 200, {"ok": bool(updated.get("saved")), "updated": updated})
             return
 
         if path == "/v1/hermes/prompt":
             if not isinstance(body, dict) or not body.get("prompt"):
                 _json_response(self, 400, {"ok": False, "error": "prompt required"})
                 return
-            prompt = str(body["prompt"])
+            prompt = body["prompt"]
             session_id = body.get("session_id")
             model = body.get("model")
             provider = body.get("provider")
@@ -951,6 +1233,7 @@ def _spawn_self_update_loop() -> None:
 
 
 def main() -> None:
+    global TOKEN, TOKEN_SOURCE
     # Refuse non-loopback binds unless explicitly forced (safety).
     if HOST not in ("127.0.0.1", "localhost", "::1") and os.environ.get(
         "HERMES_CHROME_BRIDGE_ALLOW_NONLOCAL"
@@ -959,7 +1242,9 @@ def main() -> None:
             f"refusing to bind non-local host {HOST!r}; "
             "set HERMES_CHROME_BRIDGE_ALLOW_NONLOCAL=1 to override"
         )
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server = _BridgeServer((HOST, PORT), Handler)
+    # Resolve/generate token only after winning the port bind.
+    TOKEN, TOKEN_SOURCE = _resolve_token()
     auth = "on" if TOKEN else "off"
     auto = (
         "on"

@@ -27,10 +27,17 @@ if [[ "$BTN" != "Install" ]]; then
   exit 0
 fi
 
-if [[ -f "${REPO_ROOT}/scripts/install.sh" && -f "${REPO_ROOT}/bridge.py" ]]; then
-  echo "Installing from local clone: $REPO_ROOT"
+if [[ -d "${REPO_ROOT}/.git" && -f "${REPO_ROOT}/scripts/install.sh" && -f "${REPO_ROOT}/bridge.py" ]]; then
+  echo "Installing from local git clone: $REPO_ROOT"
   osascript -e 'display notification "Installing from local clone…" with title "Hermes Chrome"' 2>/dev/null || true
   if ! bash "${REPO_ROOT}/scripts/install.sh" --dev; then
+    osascript -e 'display dialog "Install failed. Ensure Python 3.9+ is on PATH." buttons {"OK"} with icon stop with title "Hermes Chrome"' 2>/dev/null || true
+    exit 1
+  fi
+elif [[ -f "${REPO_ROOT}/scripts/install.sh" && -f "${REPO_ROOT}/bridge.py" ]]; then
+  echo "Installing from extracted tarball into ~/.hermes/hermes-chrome: $REPO_ROOT"
+  osascript -e 'display notification "Installing companion into ~/.hermes/hermes-chrome…" with title "Hermes Chrome"' 2>/dev/null || true
+  if ! bash "${REPO_ROOT}/scripts/install.sh" --from "$REPO_ROOT"; then
     osascript -e 'display dialog "Install failed. Ensure Python 3.9+ is on PATH." buttons {"OK"} with icon stop with title "Hermes Chrome"' 2>/dev/null || true
     exit 1
   fi

@@ -133,7 +133,11 @@ function versionDrift(s) {
 }
 
 function isHealthy(s) {
-  return !!s.bridgeOk && (!s.bridgeAuth || (!!s.tokenSet && !!s.authReady));
+  return (
+    !!s.bridgeOk &&
+    (!s.bridgeAuth || (!!s.tokenSet && !!s.authReady)) &&
+    !s.authErrorRecent
+  );
 }
 
 function setDot(kind) {
@@ -172,7 +176,7 @@ function showInstallSteps(opts) {
   if (els.setupHeading) els.setupHeading.textContent = opts.heading;
   if (els.setupLead) els.setupLead.innerHTML = opts.leadHtml;
   if (els.setupNote) els.setupNote.textContent = opts.note || "";
-  if (els.setupSteps) els.setupSteps.hidden = false;
+  if (els.setupSteps) els.setupSteps.hidden = !!opts.hideSteps;
   if (els.pairBlock) els.pairBlock.hidden = true;
 
   if (els.setupCmd) els.setupCmd.textContent = CMD_INSTALL;
@@ -310,6 +314,7 @@ function updateUserFacing(s) {
       }
       showInstallSteps({
         tone: "warn",
+        hideSteps: true,
         heading: "Update the browser half",
         leadHtml:
           "Open the <a href=\"https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa\" target=\"_blank\" rel=\"noopener\">Chrome Web Store listing</a> " +
@@ -485,9 +490,16 @@ function updateTech(s) {
 }
 
 async function refresh() {
-  const s = await chrome.runtime.sendMessage({ type: "status" });
-  updateUserFacing(s);
-  updateTech(s);
+  try {
+    const s = await chrome.runtime.sendMessage({ type: "status" });
+    if (!s || s.ok === false) return;
+    updateUserFacing(s);
+    updateTech(s);
+  } catch (e) {
+    if (els.summaryDesc) {
+      els.summaryDesc.textContent = `Extension service worker unavailable: ${e?.message || e}`;
+    }
+  }
 }
 
 function openGuide() {
@@ -499,52 +511,58 @@ function openGithub() {
 }
 
 async function runAction(action) {
-  if (action === "refresh") {
-    await refresh();
-    return;
-  }
-  if (action === "reconnect") {
-    await chrome.runtime.sendMessage({ type: "reconnect" });
-    await refresh();
-    return;
-  }
-  if (action === "pair") {
-    const r = await chrome.runtime.sendMessage({ type: "pair" });
-    if (els.authLine) {
-      els.authLine.textContent =
-        r && r.ok ? r.hint || "Paired" : (r && r.error) || "Pair failed";
+  try {
+    if (action === "refresh") {
+      await refresh();
+      return;
     }
-    if (els.summaryDesc && r && !r.ok) {
-      els.summaryDesc.textContent =
-        (r && r.error) || "Pair failed — open Technical details or paste token in Options.";
+    if (action === "reconnect") {
+      await chrome.runtime.sendMessage({ type: "reconnect" });
+      await refresh();
+      return;
     }
-    await refresh();
-    return;
-  }
-  if (action === "copyCmd") {
-    await copyText(els.setupCmd ? els.setupCmd.textContent : CMD_INSTALL, els.btnPrimary);
-    return;
-  }
-  if (action === "guide") {
-    openGuide();
-    return;
-  }
-  if (action === "github") {
-    openGithub();
-    return;
-  }
-  if (action === "stopWorkspace") {
-    const r = await chrome.runtime.sendMessage({
-      type: "stopWorkspace",
-      closeTabs: true,
-    });
+    if (action === "pair") {
+      const r = await chrome.runtime.sendMessage({ type: "pair" });
+      await refresh();
+      if (els.authLine) {
+        els.authLine.textContent =
+          r && r.ok ? r.hint || "Paired" : (r && r.error) || "Pair failed";
+      }
+      if (els.summaryDesc && (!r || !r.ok)) {
+        els.summaryDesc.textContent =
+          (r && r.error) || "Pair failed — open Technical details or paste token in Options.";
+      }
+      return;
+    }
+    if (action === "copyCmd") {
+      await copyText(els.setupCmd ? els.setupCmd.textContent : CMD_INSTALL, els.btnPrimary);
+      return;
+    }
+    if (action === "guide") {
+      openGuide();
+      return;
+    }
+    if (action === "github") {
+      openGithub();
+      return;
+    }
+    if (action === "stopWorkspace") {
+      const r = await chrome.runtime.sendMessage({
+        type: "stopWorkspace",
+        closeTabs: true,
+      });
+      await refresh();
+      if (els.summaryDesc) {
+        els.summaryDesc.textContent =
+          r && r.ok
+            ? `Workspace closed (${r.closed ?? 0} tab(s)). Companion still running.`
+            : (r && r.error) || "Could not close workspace.";
+      }
+    }
+  } catch (e) {
     if (els.summaryDesc) {
-      els.summaryDesc.textContent =
-        r && r.ok
-          ? `Workspace closed (${r.closed ?? 0} tab(s)). Companion still running.`
-          : (r && r.error) || "Could not close workspace.";
+      els.summaryDesc.textContent = `Action failed: ${e?.message || e}`;
     }
-    await refresh();
   }
 }
 
@@ -552,13 +570,18 @@ async function copyText(text, btn) {
   try {
     await navigator.clipboard.writeText(text);
     if (btn) {
-      const prev = btn.textContent;
+      if (!btn.dataset.origLabel) {
+        btn.dataset.origLabel = btn.textContent || "Copy";
+      }
+      const origLabel = btn.dataset.origLabel;
       btn.textContent = "Copied";
       btn.classList.add("copied");
-      setTimeout(() => {
-        btn.textContent = prev || "Copy";
+      clearTimeout(Number(btn.dataset.copyTimer || 0));
+      const tid = setTimeout(() => {
+        btn.textContent = origLabel;
         btn.classList.remove("copied");
       }, 1500);
+      btn.dataset.copyTimer = String(tid);
     }
   } catch (_) {
     if (btn) btn.textContent = "Select & copy";
@@ -569,10 +592,20 @@ if (els.btnSidePanel) {
   els.btnSidePanel.onclick = async () => {
     try {
       const win = await chrome.windows.getCurrent();
-      await chrome.runtime.sendMessage({ type: "open_side_panel", windowId: win.id });
+      if (chrome.sidePanel?.open) {
+        await chrome.sidePanel.open({ windowId: win.id });
+      } else {
+        await chrome.runtime.sendMessage({ type: "open_side_panel", windowId: win.id });
+      }
       window.close();
     } catch {
-      /* ignore */
+      try {
+        const win = await chrome.windows.getCurrent();
+        await chrome.runtime.sendMessage({ type: "open_side_panel", windowId: win.id });
+        window.close();
+      } catch {
+        /* ignore */
+      }
     }
   };
 }
@@ -589,9 +622,15 @@ if (els.btnOptions) {
 }
 if (els.btnCopyMcp) {
   els.btnCopyMcp.onclick = async () => {
-    const r = await chrome.runtime.sendMessage({ type: "getMcpConfig" });
-    if (r && r.json) {
-      await copyText(r.json, els.btnCopyMcp);
+    try {
+      const r = await chrome.runtime.sendMessage({ type: "getMcpConfig" });
+      if (r && r.json) {
+        await copyText(r.json, els.btnCopyMcp);
+      }
+    } catch (e) {
+      if (els.summaryDesc) {
+        els.summaryDesc.textContent = `Could not copy MCP config: ${e?.message || e}`;
+      }
     }
   };
 }

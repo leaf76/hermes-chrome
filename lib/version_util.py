@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, HTTPSHandler
+
+_LIB = Path(__file__).resolve().parent
+if str(_LIB) not in sys.path:
+    sys.path.insert(0, str(_LIB))
 
 GITHUB_LATEST = "https://api.github.com/repos/leaf76/hermes-chrome/releases/latest"
 INSTALL_HINT = (
@@ -33,10 +38,10 @@ def product_version(root: Path) -> str:
 def parse_semver(text: str | None) -> tuple[int, int, int]:
     if not text:
         return (0, 0, 0)
-    nums = [int(x) for x in re.findall(r"\d+", str(text))[:3]]
-    while len(nums) < 3:
-        nums.append(0)
-    return (nums[0], nums[1], nums[2])
+    m = re.match(r"^\D*(\d+)(?:\.(\d+))?(?:\.(\d+))?", str(text).strip())
+    if not m:
+        return (0, 0, 0)
+    return (int(m.group(1)), int(m.group(2) or 0), int(m.group(3) or 0))
 
 
 def cmp_semver(a: str | None, b: str | None) -> int:
@@ -57,6 +62,8 @@ def mismatch(companion: str | None, extension: str | None) -> str | None:
 
 
 def fetch_latest_tag(timeout_s: float = 2.5) -> str | None:
+    from net_util import ssl_context
+
     req = Request(
         GITHUB_LATEST,
         headers={
@@ -65,7 +72,8 @@ def fetch_latest_tag(timeout_s: float = 2.5) -> str | None:
         },
     )
     try:
-        with urlopen(req, timeout=timeout_s) as resp:
+        opener = build_opener(HTTPSHandler(context=ssl_context()))
+        with opener.open(req, timeout=timeout_s) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (URLError, TimeoutError, OSError, json.JSONDecodeError):
         return None

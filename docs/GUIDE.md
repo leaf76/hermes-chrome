@@ -17,9 +17,9 @@
 | **Companion** (machine) | Local bridge `127.0.0.1:19876` + Native Messaging host + token — install once from this repo |
 | **Extension** (browser) | Workspace tabs, capture, light DOM — talks only to the local bridge |
 
-**Ready** = popup shows Bridge **online** + Auth **ready**, and `hermes-chrome.sh --json ping` succeeds.
+**Ready** = Side Panel (or status popup) shows **Bridge Online**, and `hermes-chrome --json ping` succeeds.
 
-If the popup shows **Setup needed**, the companion is missing or the bridge is down — follow the command in the popup (or section 1 below). That is expected when only the store package is installed.
+If it shows **Bridge Disconnected / Setup needed**, the companion is missing or the bridge is down — follow the setup prompt (or section 1 below). That is expected when only the store package is installed.
 
 ### Updates
 
@@ -27,7 +27,7 @@ If the popup shows **Setup needed**, the companion is missing or the bridge is d
 
 **Companion** (non `--dev` installs) auto-updates daily from the official GitHub
 remote (fast-forward only). Disable: `hermes-chrome self-update disable`.
-Manual: `hermes-chrome self-update now`. Popup still warns if the two halves drift.
+Manual: `hermes-chrome self-update now`. Extension status still warns if the two halves drift.
 
 ---
 
@@ -115,12 +115,12 @@ Packaging notes: [PACKAGING.md](./PACKAGING.md)
 
 ### 2. Install / enable the extension
 
-- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **or** Load unpacked → `extension/` (v1.8.7)
+- [Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) **or** Load unpacked → `extension/` (v1.8.9)
 - Accept **nativeMessaging** if prompted
-- **Reload** the extension → **click the icon once**
-- Wait for auto-pair, or press **Pair** in the popup
+- **Reload** the extension → **click the icon once** (opens Side Panel)
+- Wait for auto-pair, or press **Pair** in the Side Panel banner or Extension Options
 
-Healthy popup: Bridge **online**, Auth **ready**.
+Healthy Side Panel: **Bridge Online** and **Agent Ready**.
 
 ### 3. Point your agent (optional)
 
@@ -239,7 +239,7 @@ Some flags exist for specific workflows (e.g. `capture --prefer gc|nq`, `list-tv
 |--------|-------------|
 | Bridge **offline** | Run `install-for-agent` once; click extension icon; check Python |
 | Native host not found | `install-native-host` / re-run installer; reload extension |
-| Auth need pair | Popup → **Pair**, or `pair-open` then Pair |
+| Auth need pair | Side Panel / Options → **Pair**, or `pair-open` then Pair |
 | Cannot see tab | Tab outside Hermes group → Options → allow cross-workspace, or move tab into group |
 | MCP tools missing | Restart the agent session after registering `mcp_server.py` |
 
@@ -261,5 +261,5 @@ Some flags exist for specific workflows (e.g. `capture --prefer gc|nq`, `list-tv
 
 ## In-extension guide
 
-After install, open the extension popup → **Guide**, or  
+After install, click the extension icon to open the Side Panel (warning banner → **Setup Guide**, or Options → **Open setup guide**), or  
 `chrome-extension://<id>/help.html` (same content, offline).

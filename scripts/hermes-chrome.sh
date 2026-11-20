@@ -86,6 +86,43 @@ die() { echo "error: $*" >&2; exit 1; }
 log() { [[ "${QUIET}" == "1" || "${JSON_ONLY}" == "1" ]] || echo "$@"; }
 is_json() { [[ "${JSON_ONLY}" == "1" || "${JSON_ONLY}" == "true" ]]; }
 
+find_python() {
+  local c resolved
+  for c in python3 python; do
+    resolved="$(command -v "$c" 2>/dev/null || true)"
+    if [[ -n "$resolved" && "$resolved" != *WindowsApps* ]]; then
+      if "$resolved" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+        printf '%s\n' "$resolved"
+        return 0
+      fi
+    fi
+  done
+  if command -v py >/dev/null 2>&1; then
+    resolved="$(py -3 -c 'import sys; print(sys.executable)' 2>/dev/null || true)"
+    if [[ -n "$resolved" && "$resolved" != *WindowsApps* ]]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+PYTHON3="$(find_python || true)"
+require_python() {
+  [[ -n "$PYTHON3" ]] || die "python3 (>= 3.9) not found"
+}
+
+curl_with_auth() {
+  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+    local safe_tok="${HERMES_CHROME_BRIDGE_TOKEN//[\"\$\'\\]/}"
+    safe_tok="${safe_tok//$'\r'/}"
+    safe_tok="${safe_tok//$'\n'/}"
+    printf 'header = "X-Hermes-Chrome-Token: %s"\n' "$safe_tok" | curl -K - "$@"
+  else
+    curl "$@"
+  fi
+}
+
 # Wait / retry tuning (override via env)
 WAIT_TRIES="${HERMES_CHROME_WAIT_TRIES:-45}"          # ~45s default
 WAIT_SLEEP_S="${HERMES_CHROME_WAIT_SLEEP:-1}"
@@ -93,27 +130,16 @@ CMD_RETRIES="${HERMES_CHROME_CMD_RETRIES:-3}"
 
 # Prefer authenticated health (full detail); public health is liveness-only.
 bridge_healthy() {
-  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
-    curl -fsS --max-time 1 \
-      -H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}" \
-      "${BRIDGE_URL}/v1/health" >/dev/null 2>&1
-  else
-    curl -fsS --max-time 1 "${BRIDGE_URL}/v1/health" >/dev/null 2>&1
-  fi
+  curl_with_auth -fsS --max-time 1 "${BRIDGE_URL}/v1/health" >/dev/null 2>&1
 }
 
 bridge_health_json() {
-  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
-    curl -fsS --max-time 2 \
-      -H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}" \
-      "${BRIDGE_URL}/v1/health" 2>/dev/null || echo '{}'
-  else
-    curl -fsS --max-time 2 "${BRIDGE_URL}/v1/health" 2>/dev/null || echo '{}'
-  fi
+  curl_with_auth -fsS --max-time 2 "${BRIDGE_URL}/v1/health" 2>/dev/null || echo '{}'
 }
 
 extension_connected() {
-  python3 - <<'PY' "$(bridge_health_json)"
+  require_python
+  "$PYTHON3" - <<'PY' "$(bridge_health_json)"
 import json, sys
 try:
     h = json.loads(sys.argv[1] or "{}")
@@ -136,11 +162,7 @@ reload_bridge_token() {
 
 open_pairing_quiet() {
   reload_bridge_token
-  local -a hdrs=(-H 'Content-Type: application/json')
-  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
-    hdrs+=(-H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}")
-  fi
-  curl -fsS --max-time 3 "${hdrs[@]}" -d '{}' "${BRIDGE_URL}/v1/pair-open" >/dev/null 2>&1 || true
+  curl_with_auth -fsS --max-time 3 -H 'Content-Type: application/json' -d '{}' "${BRIDGE_URL}/v1/pair-open" >/dev/null 2>&1 || true
 }
 
 # Wait for extension poll (auto-pair on extension side). Re-opens pairing only while disconnected.
@@ -179,7 +201,7 @@ cmd_bridge_status() {
     echo "bridge: running"
     echo "$health"
     # Human-readable extension gate from health payload.
-    python3 - <<'PY' "$health" 2>/dev/null || true
+    "$PYTHON3" - <<'PY' "$health" 2>/dev/null || true
 import json, sys
 h = json.loads(sys.argv[1])
 conn = h.get("extension_connected")
@@ -215,6 +237,7 @@ cmd_bridge_start() {
     return 0
   fi
   [[ -f "$BRIDGE_PY" ]] || die "missing $BRIDGE_PY"
+  require_python
   # Ensure token env is visible to the bridge process (auto-generate if missing).
   if [[ -z "${HERMES_CHROME_BRIDGE_TOKEN:-}" && -f "$ENV_FILE" ]]; then
     # shellcheck disable=SC1090
@@ -223,14 +246,19 @@ cmd_bridge_start() {
     source "$ENV_FILE"
     set +a
   fi
-  # Launch detached without shell nohup wrapper restrictions when possible.
-  env \
-    HERMES_CHROME_RUN="${RUN_DIR}" \
-    HERMES_CHROME_BRIDGE_HOST="${BRIDGE_HOST}" \
-    HERMES_CHROME_BRIDGE_PORT="${BRIDGE_PORT}" \
-    ${HERMES_CHROME_BRIDGE_TOKEN:+HERMES_CHROME_BRIDGE_TOKEN="${HERMES_CHROME_BRIDGE_TOKEN}"} \
-    ${HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH:+HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH="${HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH}"} \
-    python3 "$BRIDGE_PY" >>"$LOG_FILE" 2>&1 &
+  # Launch detached without exposing secrets on command-line argv.
+  (
+    export HERMES_CHROME_RUN="${RUN_DIR}"
+    export HERMES_CHROME_BRIDGE_HOST="${BRIDGE_HOST}"
+    export HERMES_CHROME_BRIDGE_PORT="${BRIDGE_PORT}"
+    if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
+      export HERMES_CHROME_BRIDGE_TOKEN
+    fi
+    if [[ -n "${HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH:-}" ]]; then
+      export HERMES_CHROME_BRIDGE_ALLOW_NO_AUTH
+    fi
+    exec "$PYTHON3" "$BRIDGE_PY" >>"$LOG_FILE" 2>&1
+  ) &
   echo $! >"$PID_FILE"
   local i
   for i in $(seq 1 40); do
@@ -252,15 +280,31 @@ cmd_bridge_start() {
 }
 
 cmd_bridge_stop() {
+  # On macOS, unload launchd KeepAlive service if loaded so it doesn't respawn immediately.
+  if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1; then
+    local uid
+    uid="$(id -u 2>/dev/null || true)"
+    if [[ -n "$uid" ]] && launchctl print "gui/${uid}/com.leaf76.hermes-chrome-bridge" >/dev/null 2>&1; then
+      launchctl bootout "gui/${uid}/com.leaf76.hermes-chrome-bridge" 2>/dev/null \
+        || launchctl unload "${HOME}/Library/LaunchAgents/com.leaf76.hermes-chrome-bridge.plist" 2>/dev/null \
+        || true
+    fi
+  fi
   if [[ -f "$PID_FILE" ]]; then
-    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    local file_pid
+    file_pid="$(tr -d '[:space:]' <"$PID_FILE" 2>/dev/null || true)"
+    if [[ "$file_pid" =~ ^[0-9]+$ ]]; then
+      kill "$file_pid" 2>/dev/null || true
+    fi
     rm -f "$PID_FILE"
   fi
-  # best-effort by port
-  local p
-  p="$(lsof -nP -iTCP:"${BRIDGE_PORT}" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
-  if [[ -n "$p" ]]; then
-    kill "$p" 2>/dev/null || true
+  # best-effort by port (Unix)
+  if command -v lsof >/dev/null 2>&1; then
+    local p
+    p="$(lsof -nP -iTCP:"${BRIDGE_PORT}" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+    if [[ "$p" =~ ^[0-9]+$ ]]; then
+      kill "$p" 2>/dev/null || true
+    fi
   fi
   sleep 0.2
   if bridge_healthy; then
@@ -279,6 +323,7 @@ cmd_bridge_restart() {
 # Usage: send_cmd <action> [url]
 #        send_cmd_json '{"action":"capture","prefer":"gc"}'
 send_cmd_json() {
+  require_python
   local payload="$1"
   # Suppress bridge chatter for JSON consumers
   local _prev_quiet="$QUIET"
@@ -290,31 +335,22 @@ send_cmd_json() {
   if ! wait_for_extension "$WAIT_TRIES"; then
     die "extension not connected after ${WAIT_TRIES}s.
   1) Chrome → Reload Hermes Chrome (unpacked: ${EXT_DIR})
-  2) Wait a few seconds (auto-pair) or click Pair in popup
+  2) Wait a few seconds (auto-pair) or click Pair in Side Panel/Options
   3) Retry: $0 ping
 Bridge: ${BRIDGE_URL}"
   fi
 
   local attempt resp id result curl_err
-  local -a curl_hdrs=(-H 'Content-Type: application/json')
-  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
-    curl_hdrs+=(-H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}")
-  fi
-
   for attempt in $(seq 1 "$CMD_RETRIES"); do
     reload_bridge_token
-    curl_hdrs=(-H 'Content-Type: application/json')
-    if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
-      curl_hdrs+=(-H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}")
-    fi
-    if ! resp="$(curl -fsS --max-time 10 "${curl_hdrs[@]}" -d "$payload" "${BRIDGE_URL}/v1/command" 2>/dev/null)"; then
+    if ! resp="$(curl_with_auth -fsS --max-time 10 -H 'Content-Type: application/json' -d "$payload" "${BRIDGE_URL}/v1/command" 2>/dev/null)"; then
       log "send_cmd: enqueue failed (attempt ${attempt}/${CMD_RETRIES}), retrying…"
       open_pairing_quiet
       wait_for_extension 15 || true
       sleep 0.5
       continue
     fi
-    id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$resp" 2>/dev/null || true)"
+    id="$("$PYTHON3" -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$resp" 2>/dev/null || true)"
     if [[ -z "$id" ]]; then
       log "send_cmd: bad enqueue response (attempt ${attempt}/${CMD_RETRIES})"
       sleep 0.5
@@ -322,7 +358,7 @@ Bridge: ${BRIDGE_URL}"
     fi
     # capture payloads can be large — longer wait
     curl_err=0
-    result="$(curl -fsS --max-time 90 "${curl_hdrs[@]}" "${BRIDGE_URL}/v1/result/${id}?timeout=75" 2>/dev/null)" || curl_err=$?
+    result="$(curl_with_auth -fsS --max-time 90 "${BRIDGE_URL}/v1/result/${id}?timeout=75" 2>/dev/null)" || curl_err=$?
     if [[ "$curl_err" -ne 0 || -z "$result" ]]; then
       log "send_cmd: no extension result (attempt ${attempt}/${CMD_RETRIES}), waiting…"
       open_pairing_quiet
@@ -332,7 +368,7 @@ Bridge: ${BRIDGE_URL}"
     # Success path — parse and print
     local indent_flag="2"
     is_json && indent_flag="None"
-    python3 - <<'PY' "$result" "$indent_flag"
+    "$PYTHON3" - <<'PY' "$result" "$indent_flag"
 import json, sys
 r = json.loads(sys.argv[1])
 indent = None if sys.argv[2] == "None" else 2
@@ -352,42 +388,75 @@ PY
   done
 
   die "no response from extension after ${CMD_RETRIES} attempts.
-  Reload Hermes Chrome (auto-pair) or: $0 pair-open + popup Pair
+  Reload Hermes Chrome (auto-pair) or: $0 pair-open + Side Panel/Options Pair
   ${EXT_DIR}
 Bridge: ${BRIDGE_URL}"
 }
 
 send_cmd() {
+  require_python
   local action="$1"
   shift || true
   local url="${1:-}"
   local payload
   if [[ -n "$url" ]]; then
-    payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":sys.argv[1],"url":sys.argv[2]}))' "$action" "$url")"
+    payload="$("$PYTHON3" -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":sys.argv[1],"url":sys.argv[2]}))' "$action" "$url")"
   else
-    payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":sys.argv[1]}))' "$action")"
+    payload="$("$PYTHON3" -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":sys.argv[1]}))' "$action")"
   fi
   send_cmd_json "$payload"
 }
 
-cmd_start() {
-  local url="${1:-}"
-  log "mode: hermes-chrome (daily Chrome workspace)"
-  if [[ -n "$url" ]]; then
-    send_cmd start "$url"
-  else
-    send_cmd start
+_workspace_open_cmd() {
+  require_python
+  local action="$1"
+  shift || true
+  local url="" separate_window=false width="" height="" new_tab=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --url) url="${2:-}"; shift 2 ;;
+      --separate-window|--separate_window) separate_window=true; shift ;;
+      --width) width="${2:-}"; shift 2 ;;
+      --height) height="${2:-}"; shift 2 ;;
+      --new-tab|--new_tab) new_tab=true; shift ;;
+      *) url="$1"; shift ;;
+    esac
+  done
+  if [[ "$action" != "start" && -z "$url" ]]; then
+    die "usage: $0 ${action} <url> [--separate-window] [--width N] [--height N]"
   fi
+  local payload
+  payload="$("$PYTHON3" - <<'PY' "$action" "$url" "$separate_window" "$width" "$height" "$new_tab"
+import json, sys, uuid
+action, url, sep, width, height, new_tab = sys.argv[1:7]
+obj = {"id": str(uuid.uuid4()), "action": action}
+if url:
+    obj["url"] = url
+if sep == "true":
+    obj["separateWindow"] = True
+if new_tab == "true":
+    obj["newTab"] = True
+if width:
+    obj["width"] = int(width)
+if height:
+    obj["height"] = int(height)
+print(json.dumps(obj))
+PY
+)"
+  send_cmd_json "$payload"
+}
+
+cmd_start() {
+  log "mode: hermes-chrome (daily Chrome workspace)"
+  _workspace_open_cmd start "$@"
 }
 
 cmd_open() {
-  local url="${1:-}"; [[ -n "$url" ]] || die "usage: $0 open <url>"
-  send_cmd open "$url"
+  _workspace_open_cmd open "$@"
 }
 
 cmd_new_tab() {
-  local url="${1:-}"; [[ -n "$url" ]] || die "usage: $0 new-tab <url>"
-  send_cmd new_tab "$url"
+  _workspace_open_cmd new_tab "$@"
 }
 
 cmd_status() {
@@ -395,7 +464,17 @@ cmd_status() {
 }
 
 cmd_stop() {
-  send_cmd stop
+  require_python
+  local close_tabs=true
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --keep-tabs|--keep_tabs) close_tabs=false; shift ;;
+      *) die "usage: $0 stop [--keep-tabs]" ;;
+    esac
+  done
+  local payload
+  payload="$("$PYTHON3" -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":"stop","closeTabs":sys.argv[1]=="true"}))' "$close_tabs")"
+  send_cmd_json "$payload"
 }
 
 cmd_ping() {
@@ -407,6 +486,7 @@ cmd_list_tv() {
 }
 
 cmd_list_tabs() {
+  require_python
   # Default: workspace group only. --all lists every tab (privacy-sensitive).
   local all_tabs=false url_includes="" title_includes="" limit=""
   while [[ $# -gt 0 ]]; do
@@ -420,7 +500,7 @@ cmd_list_tabs() {
     esac
   done
   local payload
-  payload="$(python3 - <<'PY' "$all_tabs" "$url_includes" "$title_includes" "$limit"
+  payload="$("$PYTHON3" - <<'PY' "$all_tabs" "$url_includes" "$title_includes" "$limit"
 import json, sys, uuid
 all_tabs = sys.argv[1] == "true"
 url_includes, title_includes, limit = sys.argv[2], sys.argv[3], sys.argv[4]
@@ -443,6 +523,7 @@ PY
 }
 
 cmd_navigate() {
+  require_python
   local url="" tab_id=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -454,7 +535,7 @@ cmd_navigate() {
   done
   [[ -n "$url" ]] || die "usage: $0 navigate <url> [--tab-id N]"
   local payload
-  payload="$(python3 - <<'PY' "$url" "$tab_id"
+  payload="$("$PYTHON3" - <<'PY' "$url" "$tab_id"
 import json, sys, uuid
 url, tab_id = sys.argv[1], sys.argv[2]
 obj = {"id": str(uuid.uuid4()), "action": "navigate", "url": url, "active": False}
@@ -466,7 +547,50 @@ PY
   send_cmd_json "$payload"
 }
 
+cmd_read_page() {
+  require_python
+  local url="" tab_id="" wait_ms="" text_max="" separate_window=false width="" height=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tab-id|--tabId) tab_id="${2:-}"; shift 2 ;;
+      --url) url="${2:-}"; shift 2 ;;
+      --wait-ms|--waitMs) wait_ms="${2:-}"; shift 2 ;;
+      --text-max|--textMax) text_max="${2:-}"; shift 2 ;;
+      --separate-window|--separate_window) separate_window=true; shift ;;
+      --width) width="${2:-}"; shift 2 ;;
+      --height) height="${2:-}"; shift 2 ;;
+      http*|*://*) url="$1"; shift ;;
+      *) die "usage: $0 read-page [--url URL|--tab-id N] [--wait-ms N] [--text-max N] [--separate-window]" ;;
+    esac
+  done
+  [[ -n "$url" || -n "$tab_id" ]] || die "usage: $0 read-page [--url URL|--tab-id N]"
+  local payload
+  payload="$("$PYTHON3" - <<'PY' "$url" "$tab_id" "$wait_ms" "$text_max" "$separate_window" "$width" "$height"
+import json, sys, uuid
+url, tab_id, wait_ms, text_max, sep, width, height = sys.argv[1:8]
+obj = {"id": str(uuid.uuid4()), "action": "read_page"}
+if url:
+    obj["url"] = url
+if tab_id:
+    obj["tabId"] = int(tab_id)
+if wait_ms:
+    obj["waitMs"] = int(wait_ms)
+if text_max:
+    obj["textMax"] = int(text_max)
+if sep == "true":
+    obj["separateWindow"] = True
+if width:
+    obj["width"] = int(width)
+if height:
+    obj["height"] = int(height)
+print(json.dumps(obj))
+PY
+)"
+  send_cmd_json "$payload"
+}
+
 cmd_eval() {
+  require_python
   local tab_id="" expr=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -477,26 +601,166 @@ cmd_eval() {
   done
   [[ -n "$tab_id" && -n "$expr" ]] || die "usage: $0 eval --tab-id N --expr 'document.title'"
   local payload
-  payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":"eval","tabId":int(sys.argv[1]),"expression":sys.argv[2]}))' "$tab_id" "$expr")"
+  payload="$("$PYTHON3" -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":"eval","tabId":int(sys.argv[1]),"expression":sys.argv[2]}))' "$tab_id" "$expr")"
   send_cmd_json "$payload"
 }
 
 cmd_click() {
-  local tab_id="" selector=""
+  require_python
+  local tab_id="" selector="" text="" text_includes="" index="" visible_only="" mouse_events=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --tab-id|--tabId) tab_id="${2:-}"; shift 2 ;;
       --selector|-s) selector="${2:-}"; shift 2 ;;
-      *) die "usage: $0 click --tab-id N --selector 'css'" ;;
+      --text) text="${2:-}"; shift 2 ;;
+      --text-includes|--textIncludes) text_includes="${2:-}"; shift 2 ;;
+      --index) index="${2:-}"; shift 2 ;;
+      --visible-only) visible_only=true; shift ;;
+      --no-visible-only) visible_only=false; shift ;;
+      --mouse-events) mouse_events=true; shift ;;
+      *) die "usage: $0 click --tab-id N [--selector 'css'|--text S|--text-includes S] [--index N] [--mouse-events]" ;;
     esac
   done
-  [[ -n "$tab_id" && -n "$selector" ]] || die "usage: $0 click --tab-id N --selector 'css'"
+  [[ -n "$tab_id" && ( -n "$selector" || -n "$text" || -n "$text_includes" ) ]] || \
+    die "usage: $0 click --tab-id N (--selector 'css' | --text S | --text-includes S)"
   local payload
-  payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":"click","tabId":int(sys.argv[1]),"selector":sys.argv[2]}))' "$tab_id" "$selector")"
+  payload="$("$PYTHON3" - <<'PY' "$tab_id" "$selector" "$text" "$text_includes" "$index" "$visible_only" "$mouse_events"
+import json, sys, uuid
+tab_id, sel, txt, sub, idx, vis, mouse = sys.argv[1:8]
+obj = {"id": str(uuid.uuid4()), "action": "click", "tabId": int(tab_id)}
+if sel:
+    obj["selector"] = sel
+if txt:
+    obj["text"] = txt
+if sub:
+    obj["textIncludes"] = sub
+if idx:
+    obj["index"] = int(idx)
+if vis == "true":
+    obj["visibleOnly"] = True
+elif vis == "false":
+    obj["visibleOnly"] = False
+if mouse == "true":
+    obj["mouseEvents"] = True
+print(json.dumps(obj))
+PY
+)"
+  send_cmd_json "$payload"
+}
+
+cmd_dom_query() {
+  require_python
+  local tab_id="" selector="" text="" text_includes="" aria_label="" visible_only="true" limit="" text_max=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tab-id|--tabId) tab_id="${2:-}"; shift 2 ;;
+      --selector|-s) selector="${2:-}"; shift 2 ;;
+      --text) text="${2:-}"; shift 2 ;;
+      --text-includes|--textIncludes) text_includes="${2:-}"; shift 2 ;;
+      --aria-label|--ariaLabel) aria_label="${2:-}"; shift 2 ;;
+      --all|--no-visible-only) visible_only="false"; shift ;;
+      --visible-only) visible_only="true"; shift ;;
+      --limit) limit="${2:-}"; shift 2 ;;
+      --text-max|--textMax) text_max="${2:-}"; shift 2 ;;
+      *) die "usage: $0 dom-query --tab-id N [--selector CSS] [--text S] [--text-includes S] [--aria-label S] [--all] [--limit N]" ;;
+    esac
+  done
+  [[ -n "$tab_id" ]] || die "usage: $0 dom-query --tab-id N [...]"
+  local payload
+  payload="$("$PYTHON3" - <<'PY' "$tab_id" "$selector" "$text" "$text_includes" "$aria_label" "$visible_only" "$limit" "$text_max"
+import json, sys, uuid
+tab_id, sel, txt, sub, aria, vis, limit, txt_max = sys.argv[1:9]
+obj = {"id": str(uuid.uuid4()), "action": "dom_query", "tabId": int(tab_id), "visibleOnly": vis == "true"}
+if sel:
+    obj["selector"] = sel
+if txt:
+    obj["text"] = txt
+if sub:
+    obj["textIncludes"] = sub
+if aria:
+    obj["ariaLabel"] = aria
+if limit:
+    obj["limit"] = int(limit)
+if txt_max:
+    obj["textMax"] = int(txt_max)
+print(json.dumps(obj))
+PY
+)"
+  send_cmd_json "$payload"
+}
+
+cmd_editor_get() {
+  require_python
+  local tab_id="" selector="" model_index="" max_chars="" list_models=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tab-id|--tabId) tab_id="${2:-}"; shift 2 ;;
+      --selector|-s) selector="${2:-}"; shift 2 ;;
+      --model-index|--modelIndex) model_index="${2:-}"; shift 2 ;;
+      --max-chars|--maxChars) max_chars="${2:-}"; shift 2 ;;
+      --list-models|--listModels) list_models=true; shift ;;
+      *) die "usage: $0 editor-get --tab-id N [--selector CSS] [--model-index N] [--max-chars N] [--list-models]" ;;
+    esac
+  done
+  [[ -n "$tab_id" ]] || die "usage: $0 editor-get --tab-id N"
+  local payload
+  payload="$("$PYTHON3" - <<'PY' "$tab_id" "$selector" "$model_index" "$max_chars" "$list_models"
+import json, sys, uuid
+tab_id, sel, midx, maxc, lm = sys.argv[1:6]
+obj = {"id": str(uuid.uuid4()), "action": "editor_get", "tabId": int(tab_id)}
+if sel:
+    obj["selector"] = sel
+if midx:
+    obj["modelIndex"] = int(midx)
+if maxc:
+    obj["maxChars"] = int(maxc)
+if lm == "true":
+    obj["listModels"] = True
+print(json.dumps(obj))
+PY
+)"
+  send_cmd_json "$payload"
+}
+
+cmd_editor_set() {
+  require_python
+  local tab_id="" selector="" text="" file_path="" has_text=false model_index="" focus=true
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tab-id|--tabId) tab_id="${2:-}"; shift 2 ;;
+      --selector|-s) selector="${2:-}"; shift 2 ;;
+      --text|-t) text="${2:-}"; has_text=true; shift 2 ;;
+      --file|-f) file_path="${2:-}"; shift 2 ;;
+      --model-index|--modelIndex) model_index="${2:-}"; shift 2 ;;
+      --no-focus) focus=false; shift ;;
+      *) die "usage: $0 editor-set --tab-id N (--text STR | --file PATH) [--selector CSS] [--model-index N] [--no-focus]" ;;
+    esac
+  done
+  [[ -n "$tab_id" && ( "$has_text" == true || -n "$file_path" ) ]] || \
+    die "usage: $0 editor-set --tab-id N (--text STR | --file PATH)"
+  if [[ -n "$file_path" ]]; then
+    [[ -f "$file_path" ]] || die "missing file: $file_path"
+  fi
+  local payload
+  payload="$("$PYTHON3" - <<'PY' "$tab_id" "$selector" "$text" "$file_path" "$model_index" "$focus"
+import json, sys, uuid
+from pathlib import Path
+tab_id, sel, txt, fp, midx, focus = sys.argv[1:7]
+if fp:
+    txt = Path(fp).read_text(encoding="utf-8")
+obj = {"id": str(uuid.uuid4()), "action": "editor_set", "tabId": int(tab_id), "text": txt, "focus": focus == "true"}
+if sel:
+    obj["selector"] = sel
+if midx:
+    obj["modelIndex"] = int(midx)
+print(json.dumps(obj))
+PY
+)"
   send_cmd_json "$payload"
 }
 
 cmd_type() {
+  require_python
   local tab_id="" selector="" text="" clear="true"
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -509,11 +773,12 @@ cmd_type() {
   done
   [[ -n "$tab_id" && -n "$selector" ]] || die "usage: $0 type --tab-id N --selector 'css' --text '...'"
   local payload
-  payload="$(python3 -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":"type","tabId":int(sys.argv[1]),"selector":sys.argv[2],"text":sys.argv[3],"clear":sys.argv[4]=="true"}))' "$tab_id" "$selector" "$text" "$clear")"
+  payload="$("$PYTHON3" -c 'import json,sys,uuid; print(json.dumps({"id":str(uuid.uuid4()),"action":"type","tabId":int(sys.argv[1]),"selector":sys.argv[2],"text":sys.argv[3],"clear":sys.argv[4]=="true"}))' "$tab_id" "$selector" "$text" "$clear")"
   send_cmd_json "$payload"
 }
 
 cmd_check_url() {
+  require_python
   local follow="--follow"
   local url=""
   while [[ $# -gt 0 ]]; do
@@ -525,15 +790,17 @@ cmd_check_url() {
     esac
   done
   [[ -n "$url" ]] || die "usage: $0 check-url <url> [--no-follow]"
-  python3 "${ROOT}/lib/check_url.py" $follow "$url"
+  "$PYTHON3" "${ROOT}/lib/check_url.py" "$follow" "$url"
 }
 
 cmd_analyze() {
+  require_python
   [[ $# -gt 0 ]] || die "usage: $0 analyze <path> [path...]"
-  python3 "${ROOT}/lib/analyze_file.py" "$@"
+  "$PYTHON3" "${ROOT}/lib/analyze_file.py" "$@"
 }
 
 cmd_download() {
+  require_python
   local url="" out="" cookies=false force=false check=true analyze=true
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -558,10 +825,11 @@ cmd_download() {
     export HERMES_CHROME_BRIDGE="${BRIDGE_URL}"
     export HERMES_CHROME_RUN="${RUN_DIR}"
   fi
-  python3 "${ROOT}/lib/download_file.py" "${args[@]}"
+  "$PYTHON3" "${ROOT}/lib/download_file.py" "${args[@]}"
 }
 
 cmd_page_assets() {
+  require_python
   local tab_id="" limit=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -572,7 +840,7 @@ cmd_page_assets() {
   done
   [[ -n "$tab_id" ]] || die "usage: $0 page-assets --tab-id N"
   local payload
-  payload="$(python3 - <<'PY' "$tab_id" "$limit"
+  payload="$("$PYTHON3" - <<'PY' "$tab_id" "$limit"
 import json, sys, uuid
 tab_id, limit = sys.argv[1], sys.argv[2]
 obj = {"id": str(uuid.uuid4()), "action": "page_assets", "tabId": int(tab_id)}
@@ -585,6 +853,7 @@ PY
 }
 
 cmd_check_tab_links() {
+  require_python
   local tab_id="" limit="50"
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -595,7 +864,7 @@ cmd_check_tab_links() {
   done
   [[ -n "$tab_id" ]] || die "usage: $0 check-tab-links --tab-id N"
   local payload assets
-  payload="$(python3 - <<'PY' "$tab_id" "$limit"
+  payload="$("$PYTHON3" - <<'PY' "$tab_id" "$limit"
 import json, sys, uuid
 print(json.dumps({
   "id": str(uuid.uuid4()),
@@ -608,7 +877,7 @@ PY
   JSON_ONLY=1
   QUIET=1
   assets="$(send_cmd_json "$payload")"
-  python3 - <<'PY' "$ROOT" "$assets"
+  "$PYTHON3" - <<'PY' "$ROOT" "$assets"
 import json, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "lib"))
@@ -653,7 +922,8 @@ PY
 }
 
 cmd_policy_show() {
-  python3 "${ROOT}/lib/policy.py" show
+  require_python
+  "$PYTHON3" "${ROOT}/lib/policy.py" show
 }
 
 cmd_token_setup() {
@@ -672,7 +942,8 @@ cmd_show_token() {
     die "no token (start bridge once to auto-generate, or: $0 token-setup generate)"
   fi
   if is_json; then
-    python3 -c 'import json,os; print(json.dumps({"ok":True,"token_set":True,"len":len(os.environ.get("HERMES_CHROME_BRIDGE_TOKEN",""))}))'
+    require_python
+    "$PYTHON3" -c 'import json,os; print(json.dumps({"ok":True,"token_set":True,"len":len(os.environ.get("HERMES_CHROME_BRIDGE_TOKEN",""))}))'
   else
     echo "token_set=true len=${#HERMES_CHROME_BRIDGE_TOKEN} file=${ENV_FILE}"
     echo "Paste into extension Options, or click Pair while pairing window is open."
@@ -683,63 +954,114 @@ cmd_show_token() {
 
 cmd_pair_open() {
   cmd_bridge_start
-  local -a curl_hdrs=(-H 'Content-Type: application/json')
-  if [[ -n "${HERMES_CHROME_BRIDGE_TOKEN:-}" ]]; then
-    curl_hdrs+=(-H "X-Hermes-Chrome-Token: ${HERMES_CHROME_BRIDGE_TOKEN}")
-  fi
   local resp
-  resp="$(curl -fsS --max-time 5 "${curl_hdrs[@]}" -d '{}' "${BRIDGE_URL}/v1/pair-open")"
+  resp="$(curl_with_auth -fsS --max-time 5 -H 'Content-Type: application/json' -d '{}' "${BRIDGE_URL}/v1/pair-open")"
   if is_json; then
     echo "$resp"
   else
     echo "$resp"
-    echo "Next: open Hermes Chrome popup/Options → Pair (within pairing window)."
+    echo "Next: open Hermes Chrome Side Panel/Options → Pair (within pairing window)."
   fi
 }
 
 cmd_capture() {
-  # hermes-chrome.sh capture [--prefer gc|nq|auto|active] [--out path.png]
+  # hermes-chrome.sh capture [--prefer gc|nq|auto|active] [--out path.png] [--tab-id N] [--url S] [--title S] [--settle-ms N] [--ensure-tf TF] [--tf-settle-ms N] [--allow-active]
   # Large PNG base64 must NOT go through bash vars / argv — write temp files.
   local prefer="auto"
   local out=""
+  local tab_id=""
+  local url_includes=""
+  local title_includes=""
+  local settle_ms="400"
+  local ensure_tf=""
+  local tf_settle_ms=""
+  local allow_active="0"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --prefer|-p) prefer="${2:-auto}"; shift 2 ;;
       --out|-o) out="${2:-}"; shift 2 ;;
+      --tab-id|--tabId) tab_id="${2:-}"; shift 2 ;;
+      --url|--url-includes) url_includes="${2:-}"; shift 2 ;;
+      --title|--title-includes) title_includes="${2:-}"; shift 2 ;;
+      --settle-ms|--settleMs) settle_ms="${2:-400}"; shift 2 ;;
+      --ensure-tf|--ensureTf) ensure_tf="${2:-}"; shift 2 ;;
+      --tf-settle-ms|--tfSettleMs) tf_settle_ms="${2:-}"; shift 2 ;;
+      --allow-active) allow_active="1"; shift ;;
       gc|nq|auto|active) prefer="$1"; shift ;;
       *.png|*.jpg|*.webp) out="$1"; shift ;;
-      *) die "usage: $0 capture [--prefer gc|nq|auto|active] [--out path.png]" ;;
+      *) die "usage: $0 capture [--prefer gc|nq|auto|active] [--out path.png] [--tab-id N] [--url S] [--title S] [--settle-ms N] [--ensure-tf TF] [--tf-settle-ms N] [--allow-active]" ;;
     esac
   done
   [[ -n "$out" ]] || out="${RUN_DIR}/capture-${prefer}-$(date +%Y%m%d-%H%M%S).png"
   mkdir -p "$(dirname "$out")"
   cmd_bridge_start
+  require_python
 
-  python3 - <<'PY' "$BRIDGE_URL" "$prefer" "$out"
+  "$PYTHON3" - <<'PY' "$BRIDGE_URL" "$prefer" "$out" "$tab_id" "$url_includes" "$title_includes" "$settle_ms" "$ensure_tf" "$tf_settle_ms" "$allow_active"
 import base64, json, os, sys, uuid, urllib.error, urllib.request
 from pathlib import Path
 
-bridge, prefer, out = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+(
+    bridge,
+    prefer,
+    out_str,
+    tab_id,
+    url_includes,
+    title_includes,
+    settle_ms,
+    ensure_tf,
+    tf_settle_ms,
+    allow_active,
+) = sys.argv[1:11]
+out = Path(out_str)
 cmd_id = str(uuid.uuid4())
-obj = {"id": cmd_id, "action": "capture", "prefer": prefer, "settleMs": 400}
-if prefer == "active":
+try:
+    settle_val = int(settle_ms)
+    tab_id_val = int(tab_id) if tab_id else None
+    tf_settle_val = int(tf_settle_ms) if tf_settle_ms else None
+except ValueError as exc:
+    print(f"error: invalid integer flag value: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+obj = {"id": cmd_id, "action": "capture", "prefer": prefer, "settleMs": settle_val}
+if tab_id_val is not None:
+    obj["tabId"] = tab_id_val
+if url_includes:
+    obj["urlIncludes"] = url_includes
+if title_includes:
+    obj["titleIncludes"] = title_includes
+if ensure_tf:
+    obj["ensureTf"] = ensure_tf
+if tf_settle_val is not None:
+    obj["tfSettleMs"] = tf_settle_val
+if allow_active == "1" or prefer == "active":
     obj["allowActiveCapture"] = True
     obj["allowCrossWorkspace"] = True
 if prefer in ("gc", "nq"):
     obj["allowCrossWorkspace"] = True
+
 payload = json.dumps(obj).encode()
 headers = {"Content-Type": "application/json"}
 tok = (os.environ.get("HERMES_CHROME_BRIDGE_TOKEN") or "").strip()
 if tok:
     headers["X-Hermes-Chrome-Token"] = tok
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 req = urllib.request.Request(
     f"{bridge}/v1/command",
     data=payload,
     method="POST",
     headers=headers,
 )
-with urllib.request.urlopen(req, timeout=15) as r:
-    enq = json.loads(r.read().decode())
+try:
+    with opener.open(req, timeout=15) as r:
+        enq = json.loads(r.read().decode())
+except urllib.error.HTTPError as e:
+    try:
+        err_msg = e.read().decode(errors="replace")[:500]
+    finally:
+        e.close()
+    print("error:", err_msg, file=sys.stderr)
+    sys.exit(1)
 rid = enq.get("id") or cmd_id
 try:
     rreq = urllib.request.Request(
@@ -747,10 +1069,14 @@ try:
         headers={k: v for k, v in headers.items() if k != "Content-Type"},
         method="GET",
     )
-    with urllib.request.urlopen(rreq, timeout=90) as r:
+    with opener.open(rreq, timeout=90) as r:
         body = r.read()
 except urllib.error.HTTPError as e:
-    print("error:", e.read().decode(errors="replace")[:500], file=sys.stderr)
+    try:
+        err_msg = e.read().decode(errors="replace")[:500]
+    finally:
+        e.close()
+    print("error:", err_msg, file=sys.stderr)
     sys.exit(1)
 if not body:
     print("error: empty result from extension", file=sys.stderr)
@@ -788,41 +1114,35 @@ cmd_install_full() {
 }
 
 cmd_install_mcp() {
+  require_python
   local helper="${SCRIPT_DIR}/install-mcp.py"
   [[ -f "$helper" ]] || die "missing $helper"
-  local py
-  py="$(command -v python3 || command -v python || true)"
-  [[ -n "$py" ]] || die "python3 not found"
-  "$py" "$helper" --root "$ROOT" "$@"
+  "$PYTHON3" "$helper" --root "$ROOT" "$@"
 }
 
 cmd_doctor() {
+  require_python
   local helper="${SCRIPT_DIR}/doctor.py"
   [[ -f "$helper" ]] || die "missing $helper"
-  local py
-  py="$(command -v python3 || command -v python || true)"
-  [[ -n "$py" ]] || die "python3 not found"
   if [[ "${JSON_ONLY}" == "1" ]]; then
-    "$py" "$helper" --json
+    "$PYTHON3" "$helper" --json "$@"
   else
-    "$py" "$helper" "$@"
+    "$PYTHON3" "$helper" "$@"
   fi
 }
 
 cmd_self_update() {
+  require_python
   local helper="${ROOT}/lib/self_update.py"
   [[ -f "$helper" ]] || die "missing $helper"
-  local py
-  py="$(command -v python3 || command -v python || true)"
-  [[ -n "$py" ]] || die "python3 not found"
   local sub="${1:-now}"
   shift || true
   case "$sub" in
-    enable|on) "$py" "$helper" enable ;;
-    disable|off) "$py" "$helper" disable ;;
-    status) "$py" "$helper" status ;;
-    now|run|"" ) "$py" "$helper" --force --restart ;;
-    maybe) "$py" "$helper" --maybe --restart ;;
+    enable|on) "$PYTHON3" "$helper" enable ;;
+    disable|off) "$PYTHON3" "$helper" disable ;;
+    status) "$PYTHON3" "$helper" status ;;
+    now|run|"" ) "$PYTHON3" "$helper" --force --restart ;;
+    maybe) "$PYTHON3" "$helper" --maybe --restart ;;
     *) die "usage: $0 self-update enable|disable|status|now" ;;
   esac
 }
@@ -918,7 +1238,7 @@ cmd_uninstall_launchd() {
 usage() {
   sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
   echo
-  echo "commands: start|open|new-tab|navigate|list-tabs|eval|click|type|page-assets|check-tab-links|check-url|download|analyze|policy-show|token-setup|pair-open|show-token|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|bridge-restart|install|install-for-agent|install-mcp|install-native-host|install-launchd|uninstall-launchd|install-help|doctor|self-update"
+  echo "commands: start|open|new-tab|navigate|read-page|list-tabs|eval|click|type|dom-query|editor-get|editor-set|page-assets|check-tab-links|check-url|download|analyze|policy-show|token-setup|pair-open|show-token|status|stop|ping|list-tv|capture|bridge-start|bridge-stop|bridge-status|bridge-restart|install|install-for-agent|install-mcp|install-native-host|install-launchd|uninstall-launchd|install-help|doctor|self-update"
   echo "flags: --json|--json-only|-j  --quiet|-q"
 }
 
@@ -948,14 +1268,18 @@ main() {
   local cmd="${1:-}"
   shift || true
   case "$cmd" in
-    start)          cmd_start "${1:-}" ;;
-    open)           cmd_open "${1:-}" ;;
-    new-tab)        cmd_new_tab "${1:-}" ;;
+    start)          cmd_start "$@" ;;
+    open)           cmd_open "$@" ;;
+    new-tab)        cmd_new_tab "$@" ;;
     navigate)       cmd_navigate "$@" ;;
+    read-page|read_page) cmd_read_page "$@" ;;
     list-tabs|list_tabs) cmd_list_tabs "$@" ;;
     eval|evaluate)  cmd_eval "$@" ;;
     click)          cmd_click "$@" ;;
     type)           cmd_type "$@" ;;
+    dom-query|dom_query) cmd_dom_query "$@" ;;
+    editor-get|editor_get) cmd_editor_get "$@" ;;
+    editor-set|editor_set) cmd_editor_set "$@" ;;
     page-assets|page_assets|list-assets) cmd_page_assets "$@" ;;
     check-tab-links|check_tab_links) cmd_check_tab_links "$@" ;;
     check-url|check_url) cmd_check_url "$@" ;;
@@ -966,7 +1290,7 @@ main() {
     pair-open|pair_open) cmd_pair_open ;;
     show-token|show_token) cmd_show_token ;;
     status)         cmd_status ;;
-    stop)           cmd_stop ;;
+    stop)           cmd_stop "$@" ;;
     ping)           cmd_ping ;;
     list-tv|list_tv) cmd_list_tv ;;
     capture)        cmd_capture "$@" ;;

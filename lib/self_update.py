@@ -32,7 +32,7 @@ if str(_ROOT_GUESS / "lib") not in sys.path:
 from version_util import product_version  # noqa: E402
 
 OFFICIAL_REMOTE = re.compile(
-    r"(?:https://github\.com/|git@github\.com:)leaf76/hermes-chrome(?:\.git)?/?$",
+    r"^(?:https://github\.com/|git@github\.com:)leaf76/hermes-chrome(?:\.git)?/?$",
     re.I,
 )
 FIXED_INSTALL = Path.home() / ".hermes" / "hermes-chrome"
@@ -95,24 +95,32 @@ def set_enabled(on: bool) -> dict[str, Any]:
 
 
 def _git(root: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        text=True,
-        timeout=GIT_TIMEOUT,
-        check=check,
-    )
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    kwargs: dict[str, Any] = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": GIT_TIMEOUT,
+        "check": check,
+        "env": env,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return subprocess.run(["git", "-C", str(root), *args], **kwargs)
 
 
 def official_origin(url: str) -> bool:
     u = (url or "").strip()
-    return bool(OFFICIAL_REMOTE.search(u))
+    return bool(OFFICIAL_REMOTE.fullmatch(u))
 
 
 def _write_stamp(payload: dict[str, Any]) -> None:
     run_dir().mkdir(parents=True, exist_ok=True)
     payload = {**payload, "at": int(time.time())}
-    stamp_path().write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    tmp = stamp_path().with_name(f".{STAMP_NAME}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, stamp_path())
 
 
 def status(root: Path | None = None) -> dict[str, Any]:
@@ -139,6 +147,31 @@ def status(root: Path | None = None) -> dict[str, Any]:
     return out
 
 
+def _restart_bridge_windows(root: Path) -> str:
+    pid_file = run_dir() / "bridge.pid"
+    if pid_file.is_file():
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            if pid > 0:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=10,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                    check=False,
+                )
+                time.sleep(0.3)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    try:
+        from bridge_runtime import ensure_bridge
+
+        h = ensure_bridge(timeout_s=8.0, log_name="bridge.windows.log", prefix="self-update")
+        return "restarted" if h.get("ok") else str(h.get("error") or "restart failed")
+    except Exception as e:  # noqa: BLE001
+        return str(e)
+
+
 def maybe_update(
     *,
     force: bool = False,
@@ -156,7 +189,7 @@ def maybe_update(
         try:
             prev = json.loads(stamp_path().read_text(encoding="utf-8"))
             age = time.time() - float(prev.get("at") or 0)
-            if age < INTERVAL_S:
+            if prev.get("ok") is True and age < INTERVAL_S:
                 result["skipped"] = "recent"
                 result["age_s"] = int(age)
                 return result
@@ -178,13 +211,19 @@ def maybe_update(
         _write_stamp(result)
         return result
 
+    branch = (_git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout or "").strip()
+    if branch != "main":
+        result["skipped"] = f"branch:{branch or 'detached'}"
+        _write_stamp(result)
+        return result
+
     dirty = _git(root, "status", "--porcelain")
     if (dirty.stdout or "").strip():
         result["skipped"] = "dirty"
         _write_stamp(result)
         return result
 
-    fetched = _git(root, "fetch", "--depth", "1", "origin", "main")
+    fetched = _git(root, "fetch", "origin", "main")
     if fetched.returncode != 0:
         result["ok"] = False
         result["error"] = (fetched.stderr or fetched.stdout or "git fetch failed")[:400]
@@ -214,44 +253,55 @@ def maybe_update(
     native_ps = root / "scripts" / "install-native-host.ps1"
     try:
         if os.name == "nt" and native_ps.is_file():
-            subprocess.run(
+            proc = subprocess.run(
                 [
                     "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
                     str(native_ps),
                 ],
                 capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
                 check=False,
             )
+            result["native_host"] = "refreshed" if proc.returncode == 0 else f"failed ({proc.returncode})"
         elif native.is_file():
-            subprocess.run(
+            proc = subprocess.run(
                 ["bash", str(native), "install"],
                 capture_output=True,
+                text=True,
                 timeout=120,
                 check=False,
             )
-        result["native_host"] = "refreshed"
+            result["native_host"] = "refreshed" if proc.returncode == 0 else f"failed ({proc.returncode})"
     except (OSError, subprocess.TimeoutExpired) as e:
         result["native_host"] = f"skip: {e}"
 
     _write_stamp(result)
 
     if restart:
-        cli = root / "scripts" / "hermes-chrome.sh"
-        try:
-            if cli.is_file():
-                subprocess.Popen(
-                    ["bash", str(cli), "bridge-restart"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                result["restart"] = "scheduled"
-        except OSError as e:
-            result["restart"] = str(e)
+        if os.name == "nt":
+            result["restart"] = _restart_bridge_windows(root)
+        else:
+            cli = root / "scripts" / "hermes-chrome.sh"
+            try:
+                if cli.is_file():
+                    subprocess.Popen(
+                        ["bash", str(cli), "bridge-restart"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    result["restart"] = "scheduled"
+            except OSError as e:
+                result["restart"] = str(e)
 
     return result
 
@@ -273,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     if cmd in ("--maybe", "maybe"):
         return _print(maybe_update(restart="--restart" in args))
     if cmd in ("--force", "now", "run"):
-        return _print(maybe_update(force=True, restart="--restart" in args or True))
+        return _print(maybe_update(force=True, restart=("--no-restart" not in args)))
     print("usage: self_update.py enable|disable|status|--maybe|--force [--restart]", file=sys.stderr)
     return 2
 

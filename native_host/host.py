@@ -19,7 +19,7 @@ from pathlib import Path
 
 # Allow `import bridge_runtime` from repo lib/
 _ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
+if str(_ROOT / "lib") not in sys.path:
     sys.path.insert(0, str(_ROOT / "lib"))
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -36,14 +36,40 @@ from version_util import product_version  # noqa: E402
 HOST_VERSION = product_version(ROOT)
 
 
+_MAX_NATIVE_MSG_BYTES = 1024 * 1024
+
+
+def _read_exact(stream, n: int) -> bytes | None:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _write_all(stream, data: bytes) -> None:
+    view = memoryview(data)
+    written = 0
+    while written < len(data):
+        n = stream.write(view[written:])
+        if n is None:
+            written = len(data)
+            break
+        if n == 0:
+            raise OSError("short write to native host stdout")
+        written += n
+
+
 def read_message() -> dict | None:
-    raw_len = sys.stdin.buffer.read(4)
-    if not raw_len or len(raw_len) < 4:
+    raw_len = _read_exact(sys.stdin.buffer, 4)
+    if not raw_len:
         return None
     (length,) = struct.unpack("<I", raw_len)
-    if length <= 0 or length > 12 * 1024 * 1024:
+    if length <= 0 or length > _MAX_NATIVE_MSG_BYTES:
         return None
-    data = sys.stdin.buffer.read(length)
+    data = _read_exact(sys.stdin.buffer, length)
     if not data:
         return None
     return json.loads(data.decode("utf-8"))
@@ -51,8 +77,14 @@ def read_message() -> dict | None:
 
 def send_message(obj: dict) -> None:
     raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    sys.stdout.buffer.write(struct.pack("<I", len(raw)))
-    sys.stdout.buffer.write(raw)
+    if len(raw) > _MAX_NATIVE_MSG_BYTES:
+        raw = json.dumps(
+            {"ok": False, "error": "native messaging response exceeded 1 MiB limit"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    _write_all(sys.stdout.buffer, struct.pack("<I", len(raw)))
+    _write_all(sys.stdout.buffer, raw)
     sys.stdout.buffer.flush()
 
 
@@ -89,22 +121,14 @@ def handle(msg: dict) -> dict:
 
 def main() -> int:
     log(f"native host start version={HOST_VERSION} root={ROOT}", prefix="native-host")
-    # Proactive ensure so extension poll can succeed immediately.
+    # Ensure bridge is ready without emitting an unsolicited stdout frame before
+    # reading Chrome's first request (sendNativeMessage takes the 1st frame as reply).
     try:
-        boot = ensure_and_pair(
+        ensure_and_pair(
             timeout_s=10.0, log_name="bridge.native.log", prefix="native-host"
         )
-        # Push one unsolicited status if Chrome is listening (optional; some
-        # clients only use request/response — still fine to send).
-        send_message({"ok": True, "event": "boot", **{k: boot.get(k) for k in (
-            "service", "auth", "pairing_open", "extension_connected", "bridge_url", "error"
-        ) if k in boot or boot.get(k) is not None}})
     except Exception as e:  # noqa: BLE001
         log(f"boot ensure failed: {e}", prefix="native-host")
-        try:
-            send_message({"ok": False, "event": "boot", "error": str(e)})
-        except Exception:  # noqa: BLE001
-            pass
 
     while True:
         try:

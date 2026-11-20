@@ -1,6 +1,6 @@
 # hermes-chrome
 
-**Current:** companion + extension **v1.8.7** · **License:** [MIT](LICENSE)
+**Current:** companion + extension **v1.8.9** · **License:** [MIT](LICENSE)
 
 | | |
 |--|--|
@@ -32,7 +32,7 @@ let an extension open a control port. Hermes Chrome is always:
 **MCP** ships as `mcp_server.py` in the companion install; installers register
 Grok / Cursor / Claude Desktop when present.
 
-**Ready** means: popup **Connected**, and CLI/MCP can `ping`.
+**Ready** means: Side Panel **Bridge Online / Agent Ready**, and CLI/MCP can `ping`.
 
 ### 🤖 Ask Your AI to Install (One-Shot Prompt)
 
@@ -64,7 +64,7 @@ npx hermes-chrome-companion
 
 # → ~/.hermes/hermes-chrome + ~/.local/bin/hermes-chrome
 
-# 2) Chrome Web Store (v1.8.7) or Load unpacked → click icon once → Pair if needed
+# 2) Chrome Web Store (v1.8.9) or Load unpacked → click icon once → Pair if needed
 #    https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa
 
 # 3) Smoke
@@ -77,7 +77,7 @@ hermes-chrome doctor
 zip, optional `.pkg`. Details: [docs/PACKAGING.md](docs/PACKAGING.md).
 
 Full walkthrough: [docs/GUIDE.md](docs/GUIDE.md) · [繁中 docs/GUIDE.zh-TW.md](docs/GUIDE.zh-TW.md) ·
-extension popup → **Guide** (offline help).
+Side Panel → **Setup Guide** / Options → **Open setup guide** (offline help).
 
 **Privacy policy (Chrome Web Store):** https://leaf76.github.io/hermes-chrome/privacy-policy  
 (also in-repo: `docs/privacy-policy.md` / `store/privacy-policy.md`)
@@ -181,10 +181,10 @@ What the companion install does:
 
 Then the browser half:
 
-1. Install/enable **Hermes Chrome v1.8.5** ([Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) or Load unpacked → `./extension`)
-2. Accept **nativeMessaging** if prompted → **Reload** → click icon once
-3. Wait for auto-pair (or popup → **Pair**). If Bridge is offline, popup shows
-   **Setup needed** with the companion command — not a broken install alone.
+1. Install/enable **Hermes Chrome v1.8.9** ([Chrome Web Store](https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa) or Load unpacked → `./extension`)
+2. Accept **nativeMessaging** if prompted → **Reload** → click icon once (opens Side Panel)
+3. Wait for auto-pair (or Side Panel / Options → **Pair**). If Bridge is offline, the banner shows
+   setup instructions — not a broken install alone.
 4. **CLI users:** done — `hermes-chrome.sh --json ping`  
    **MCP users:** restart agent session so `hermes_chrome_*` tools load
 5. Smoke: `hermes_chrome_status` / `capture` (MCP) or CLI equivalents
@@ -200,9 +200,9 @@ Then the browser half:
 ```bash
 ./scripts/hermes-chrome.sh install-launchd   # macOS recommended (creates token + KeepAlive)
 # or: ./scripts/hermes-chrome.sh bridge-start
-# Chrome Web Store (v1.8.7) or Load unpacked → ./extension
+# Chrome Web Store (v1.8.9) or Load unpacked → ./extension
 # Auto-pairs when bridge pairing is open (reload / click icon is enough).
-# Manual fallback: ./scripts/hermes-chrome.sh pair-open  then popup → Pair
+# Manual fallback: ./scripts/hermes-chrome.sh pair-open  then Side Panel/Options → Pair
 ./scripts/hermes-chrome.sh bridge-status     # auth:true, extension_connected:true
 ./scripts/hermes-chrome.sh ping              # waits/retries until extension is up
 ./scripts/hermes-chrome.sh --json ping       # agent-friendly JSON only
@@ -239,11 +239,12 @@ grok mcp add hermes-chrome -- /path/to/python3 /path/to/hermes-chrome/mcp_server
 ```
 
 MCP tools: compact JSON (`id`/`title`/`url`; capture = file path, never PNG bytes).
-`hermes_chrome_status`, `hermes_chrome_ping`, `hermes_chrome_list_tabs`,
-`hermes_chrome_list_tv`, `hermes_chrome_capture`, `hermes_chrome_open`,
-`hermes_chrome_stop` (close agent Tab Group when done — not the bridge),
-`hermes_chrome_navigate`, `hermes_chrome_eval`, `hermes_chrome_click`,
-`hermes_chrome_type`.
+`hermes_chrome_status`, `hermes_chrome_ping`, `hermes_chrome_start`,
+`hermes_chrome_open`, `hermes_chrome_list_tabs`, `hermes_chrome_read_page`,
+`hermes_chrome_navigate`, `hermes_chrome_dom_query`, `hermes_chrome_editor_get`,
+`hermes_chrome_editor_set`, `hermes_chrome_eval`, `hermes_chrome_click`,
+`hermes_chrome_type`, `hermes_chrome_capture`, `hermes_chrome_stop`
+(close agent Tab Group when done — not the bridge).
 
 CLI-only agents can skip MCP and call `hermes-chrome.sh --json …` or HTTP `:19876`.
 

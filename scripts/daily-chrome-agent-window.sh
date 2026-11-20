@@ -91,10 +91,10 @@ create_agent_window() {
     fi
   fi
 
-  # Escape for AppleScript string
+  # Escape for AppleScript string (strip CR/LF and escape backslashes/quotes)
   local url_as name_as
-  url_as="$(printf '%s' "$url" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-  name_as="$(printf '%s' "$given_name" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  url_as="$(printf '%s' "$url" | tr -d '\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  name_as="$(printf '%s' "$given_name" | tr -d '\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g')"
 
   osascript <<APPLESCRIPT
 set targetURL to "${url_as}"
@@ -124,16 +124,27 @@ return wid as text
 APPLESCRIPT
 }
 
+as_escape() {
+  printf '%s' "$1" | tr -d '\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+require_numeric_wid() {
+  local wid="$1"
+  [[ "$wid" =~ ^[0-9]+$ ]] || die "invalid window_id '${wid}' (expected digits)"
+}
+
 window_exists() {
   local wid="$1"
+  require_numeric_wid "$wid"
   osascript -e "tell application \"Google Chrome\" to (exists (first window whose id is ${wid}))" 2>/dev/null | grep -qi true
 }
 
 # Navigate active tab of agent window (no activate).
 set_active_url() {
   local wid="$1" url="$2"
+  require_numeric_wid "$wid"
   local url_as
-  url_as="$(printf '%s' "$url" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  url_as="$(as_escape "$url")"
   osascript <<APPLESCRIPT
 tell application "Google Chrome"
   if not (exists (first window whose id is ${wid})) then error "agent window ${wid} not found"
@@ -144,8 +155,9 @@ APPLESCRIPT
 
 add_tab() {
   local wid="$1" url="$2"
+  require_numeric_wid "$wid"
   local url_as
-  url_as="$(printf '%s' "$url" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  url_as="$(as_escape "$url")"
   osascript <<APPLESCRIPT
 tell application "Google Chrome"
   if not (exists (first window whose id is ${wid})) then error "agent window ${wid} not found"
@@ -158,6 +170,7 @@ APPLESCRIPT
 
 list_urls() {
   local wid="$1"
+  require_numeric_wid "$wid"
   osascript <<APPLESCRIPT
 tell application "Google Chrome"
   if not (exists (first window whose id is ${wid})) then error "agent window ${wid} not found"
@@ -175,6 +188,7 @@ APPLESCRIPT
 
 close_window() {
   local wid="$1"
+  require_numeric_wid "$wid"
   osascript <<APPLESCRIPT
 tell application "Google Chrome"
   if exists (first window whose id is ${wid}) then

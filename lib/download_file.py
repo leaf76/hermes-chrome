@@ -35,13 +35,20 @@ _BRIDGE_MAX_RESULT = int(
 # Raw limit for extension fetch_url base64 payloads (/v1/result JSON cap).
 _BRIDGE_FETCH_MAX_RAW = max(1024, (_BRIDGE_MAX_RESULT * 3) // 4 - 4096)
 
-DEFAULT_MAX_BYTES = min(
-    int(os.environ.get("HERMES_CHROME_DOWNLOAD_MAX_BYTES", str(50 * 1024 * 1024))),
-    _BRIDGE_FETCH_MAX_RAW,
+DEFAULT_DIRECT_MAX_BYTES = int(
+    os.environ.get("HERMES_CHROME_DOWNLOAD_MAX_BYTES", str(50 * 1024 * 1024))
 )
+DEFAULT_COOKIES_MAX_BYTES = min(DEFAULT_DIRECT_MAX_BYTES, _BRIDGE_FETCH_MAX_RAW)
+DEFAULT_MAX_BYTES = DEFAULT_DIRECT_MAX_BYTES
 DEFAULT_BRIDGE = os.environ.get("HERMES_CHROME_BRIDGE", "http://127.0.0.1:19876").rstrip(
     "/"
 )
+
+_WIN_RESERVED_STEMS = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 
 
 def _bridge_token() -> str:
@@ -89,7 +96,16 @@ def _safe_filename(name: str) -> str:
     name = name.strip(" .")
     if not name or name in {".", ".."}:
         name = "download.bin"
-    return name[:180]
+    stem, dot, ext = name.partition(".")
+    if stem.upper() in _WIN_RESERVED_STEMS:
+        name = f"_{name}"
+    if len(name) > 180:
+        if dot and len(ext) <= 32:
+            keep = max(1, 180 - len(ext) - 1)
+            name = f"{stem[:keep]}.{ext}"
+        else:
+            name = name[:180]
+    return name
 
 
 def _filename_from_url(url: str) -> str:
@@ -119,19 +135,21 @@ def download_direct(
     url: str,
     *,
     out: Path | None = None,
-    max_bytes: int = DEFAULT_MAX_BYTES,
+    max_bytes: int = DEFAULT_DIRECT_MAX_BYTES,
 ) -> dict[str, Any]:
     name = _filename_from_url(url)
     dest = out or (default_download_dir() / name)
     dest = dest.expanduser()
     if dest.is_dir():
         dest = dest / name
+    if dest.is_symlink():
+        return {"ok": False, "error": f"refusing to overwrite symlink: {dest}", "url": url}
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     # Prefer curl (system CA). Fall back to urllib + certifi/ssl_context.
     if curl_available():
         try:
-            meta = curl_download(url, str(dest), max_bytes=max_bytes)
+            meta = curl_download(url, str(dest), max_bytes=max_bytes, follow_redirects=False)
             written = int(meta.get("bytes") or dest.stat().st_size)
             if written > max_bytes:
                 try:
@@ -155,6 +173,11 @@ def download_direct(
             }
         except Exception as e:  # noqa: BLE001
             curl_err = str(e)
+            if dest.exists() and not dest.is_symlink():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
             # fall through
     else:
         curl_err = None
@@ -165,7 +188,7 @@ def download_direct(
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "hermes-chrome-download/1.4 (+local)",
+            "User-Agent": "hermes-chrome-download/1.8.9 (+local)",
             "Accept": "*/*",
         },
         method="GET",
@@ -179,6 +202,8 @@ def download_direct(
             name2 = _filename_from_cd(cd) or _filename_from_url(final or url)
             if out is None and name2 != dest.name:
                 dest = dest.with_name(name2)
+                if dest.is_symlink():
+                    return {"ok": False, "error": f"refusing to overwrite symlink: {dest}", "url": url}
             cl = headers.get("content-length")
             if cl and cl.isdigit() and int(cl) > max_bytes:
                 return {
@@ -232,13 +257,14 @@ def _bridge_command(bridge: str, payload: dict[str, Any], *, timeout_s: float = 
     tok = _bridge_token()
     if tok:
         headers["X-Hermes-Chrome-Token"] = tok
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     req = urllib.request.Request(
         f"{bridge}/v1/command",
         data=data,
         method="POST",
         headers=headers,
     )
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with opener.open(req, timeout=15) as r:
         enq = json.loads(r.read().decode())
     rid = enq.get("id") or cid
     result_req = urllib.request.Request(
@@ -246,7 +272,7 @@ def _bridge_command(bridge: str, payload: dict[str, Any], *, timeout_s: float = 
         headers={k: v for k, v in headers.items() if k != "Content-Type"},
         method="GET",
     )
-    with urllib.request.urlopen(result_req, timeout=timeout_s + 15) as r:
+    with opener.open(result_req, timeout=timeout_s + 15) as r:
         body = json.loads(r.read().decode())
     if not body.get("ok"):
         raise RuntimeError(body.get("error") or str(body))
@@ -257,15 +283,16 @@ def download_with_cookies(
     url: str,
     *,
     out: Path | None = None,
-    max_bytes: int = DEFAULT_MAX_BYTES,
+    max_bytes: int = DEFAULT_COOKIES_MAX_BYTES,
     bridge: str = DEFAULT_BRIDGE,
 ) -> dict[str, Any]:
+    capped_bytes = min(max_bytes, _BRIDGE_FETCH_MAX_RAW)
     data = _bridge_command(
         bridge,
         {
             "action": "fetch_url",
             "url": url,
-            "maxBytes": max_bytes,
+            "maxBytes": capped_bytes,
         },
         timeout_s=120,
     )
@@ -273,10 +300,10 @@ def download_with_cookies(
     if not b64:
         return {"ok": False, "error": "extension returned empty body", "url": url}
     raw = base64.b64decode(b64)
-    if len(raw) > max_bytes:
+    if len(raw) > capped_bytes:
         return {
             "ok": False,
-            "error": f"body {len(raw)} exceeds max_bytes {max_bytes}",
+            "error": f"body {len(raw)} exceeds max_bytes {capped_bytes}",
             "url": url,
         }
     name = (
@@ -287,6 +314,8 @@ def download_with_cookies(
     dest = dest.expanduser()
     if dest.is_dir():
         dest = dest / name
+    if dest.is_symlink():
+        return {"ok": False, "error": f"refusing to overwrite symlink: {dest}", "url": url}
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(raw)
     return {
@@ -309,13 +338,13 @@ def download(
     force: bool = False,
     cookies: bool = False,
     analyze: bool = True,
-    max_bytes: int = DEFAULT_MAX_BYTES,
+    max_bytes: int | None = None,
     bridge: str = DEFAULT_BRIDGE,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"url": url}
 
     if check:
-        chk = check_url(url, follow=True)
+        chk = check_url(url, follow=not cookies)
         result["check"] = chk
         if not chk.get("ok") and not force:
             result["ok"] = False
@@ -324,18 +353,25 @@ def download(
         if chk.get("risk") == "medium" and not force:
             # Allow medium with warning but still download (user can --force to silence)
             result["check_warning"] = True
-        # Prefer final URL after redirects for direct download
-        fetch_url = chk.get("final_url") or url
+        # Keep original URL in cookie mode so unauth /login redirect isn't fetched instead.
+        fetch_url = url if cookies else (chk.get("final_url") or url)
     else:
         fetch_url = url
 
     out_path = Path(out).expanduser() if out else None
     if cookies:
         dl = download_with_cookies(
-            fetch_url, out=out_path, max_bytes=max_bytes, bridge=bridge
+            fetch_url,
+            out=out_path,
+            max_bytes=max_bytes if max_bytes is not None else DEFAULT_COOKIES_MAX_BYTES,
+            bridge=bridge,
         )
     else:
-        dl = download_direct(fetch_url, out=out_path, max_bytes=max_bytes)
+        dl = download_direct(
+            fetch_url,
+            out=out_path,
+            max_bytes=max_bytes if max_bytes is not None else DEFAULT_DIRECT_MAX_BYTES,
+        )
 
     result.update(dl)
     if not dl.get("ok"):
@@ -365,6 +401,9 @@ def main(argv: list[str] | None = None) -> int:
     while i < len(argv):
         a = argv[i]
         if a in ("--out", "-o"):
+            if i + 1 >= len(argv):
+                print("usage: download_file.py --out <path> <url>", file=sys.stderr)
+                return 2
             out = argv[i + 1]
             i += 2
         elif a == "--no-check":

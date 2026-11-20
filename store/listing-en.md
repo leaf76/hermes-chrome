@@ -20,7 +20,7 @@ It is **not locked to one product or domain**. Open GitHub, docs, dashboards, ne
 • Talks only to a local companion bridge on 127.0.0.1:19876
 • Native Messaging host so the bridge can auto-start when you click the icon
 • Tab capture (PNG stays on-device) and light DOM helpers for agent workflows
-• Popup status + offline Guide; offline popup shows Setup needed when companion is missing
+• Side Panel with live Action Inspector, local Hermes chat, Workspace Manager, plus offline Guide & Options
 
 **Who it is for**
 Developers using Hermes Agent, Grok, Cursor, Claude Desktop, or any local CLI that needs authenticated browser flows while keeping personal browsing separate from agent work.
@@ -30,12 +30,12 @@ Developers using Hermes Agent, Grok, Cursor, Claude Desktop, or any local CLI th
    `curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash`
    → installs to ~/.hermes/hermes-chrome. Windows: clone repo → `scripts/install-windows.ps1`. Needs Python 3.9+ and git.
 2. Install this extension (v1.8+)
-3. Reload extension, click the icon once, Pair if needed (popup: Connected)
-4. From your agent/CLI: open any URL, list-tabs, capture, eval/click/type. Optional MCP is registered for Grok/Cursor/Claude when present.
-5. Full guide: extension popup → Guide, or docs/GUIDE.md on GitHub
+3. Reload extension, click the icon once (opens Side Panel), Pair if needed (Bridge Online)
+4. From your agent/CLI: open any URL, list-tabs, read-page, capture, dom-query, eval/click/type, editor-get/set. Optional MCP registers for Grok/Cursor/Claude/VS Code when present.
+5. Full guide: Side Panel warning banner → Setup Guide, Options → Open setup guide, or docs/GUIDE.md on GitHub
 
 **Ready check**
-• Popup: Bridge online + Auth ready
+• Side Panel: Bridge Online + Agent Ready
 • CLI: `hermes-chrome.sh --json ping` succeeds
 
 **Privacy**

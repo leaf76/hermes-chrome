@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import struct
 import sys
 import tarfile
@@ -80,6 +81,15 @@ def detect_magic(head: bytes) -> str:
         return "pe_exe"
     if head.startswith(b"\x7fELF"):
         return "elf"
+    if head[:4] in {
+        b"\xfe\xed\xfa\xce",
+        b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+    }:
+        return "macho"
     if head.startswith(b"#!"):
         return "script"
     return "unknown"
@@ -101,14 +111,19 @@ def analyze_image(path: Path, head: bytes) -> dict[str, Any]:
             w, h = struct.unpack("<HH", head[6:10])
             info["width"], info["height"] = w, h
         elif kind == "jpeg":
-            # Scan SOF markers
-            data = path.read_bytes()
+            # Scan SOF markers (cap read at 2 MiB to avoid OOM on huge JPEGs)
+            with path.open("rb") as jf:
+                data = jf.read(2 * 1024 * 1024)
             i = 2
             while i < len(data) - 9:
-                if data[i] != 0xFF:
+                while i < len(data) and data[i] != 0xFF:
                     i += 1
-                    continue
-                marker = data[i + 1]
+                while i < len(data) and data[i] == 0xFF:
+                    i += 1
+                if i >= len(data):
+                    break
+                marker = data[i]
+                i += 1
                 if marker in {
                     0xC0,
                     0xC1,
@@ -124,18 +139,20 @@ def analyze_image(path: Path, head: bytes) -> dict[str, Any]:
                     0xCE,
                     0xCF,
                 }:
-                    h, w = struct.unpack(">HH", data[i + 5 : i + 9])
-                    info["width"], info["height"] = w, h
+                    if i + 7 <= len(data):
+                        h, w = struct.unpack(">HH", data[i + 3 : i + 7])
+                        info["width"], info["height"] = w, h
                     break
-                if marker == 0xD9:
+                if marker == 0xD9 or marker == 0xDA:
                     break
-                if marker in (0xD8, 0x01) or (0xD0 <= marker <= 0xD9):
-                    i += 2
+                if marker in (0xD8, 0x01) or (0xD0 <= marker <= 0xD7):
                     continue
-                if i + 4 > len(data):
+                if i + 2 > len(data):
                     break
-                seg_len = struct.unpack(">H", data[i + 2 : i + 4])[0]
-                i += 2 + seg_len
+                seg_len = struct.unpack(">H", data[i : i + 2])[0]
+                if seg_len < 2:
+                    break
+                i += seg_len
         elif kind == "webp" and len(head) >= 30:
             # VP8x or simple VP8
             if head[12:16] == b"VP8X" and len(head) >= 30:
@@ -167,6 +184,13 @@ def analyze_image(path: Path, head: bytes) -> dict[str, Any]:
     return info
 
 
+_WIN_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
 def _zip_name_unsafe(name: str) -> str | None:
     if not name:
         return "empty_name"
@@ -176,10 +200,17 @@ def _zip_name_unsafe(name: str) -> str | None:
     # Absolute / drive
     if name.startswith(("/", "\\")) or (len(name) > 1 and name[1] == ":"):
         return "absolute_path"
-    # Traversal
-    parts = name.replace("\\", "/").split("/")
+    # NTFS Alternate Data Streams
+    if ":" in name:
+        return "ntfs_ads"
+    # Traversal & Windows reserved device names
+    parts = [p for p in name.replace("\\", "/").split("/") if p]
     if ".." in parts:
         return "path_traversal"
+    for p in parts:
+        stem = p.split(".", 1)[0].upper()
+        if stem in _WIN_RESERVED_NAMES:
+            return "windows_reserved_name"
     return None
 
 
@@ -202,12 +233,24 @@ def analyze_zip(path: Path) -> dict[str, Any]:
             for info in infos[:MAX_ZIP_MEMBERS]:
                 name = info.filename
                 unsafe = _zip_name_unsafe(name)
+                mode = (info.external_attr >> 16) & 0xFFFF
+                is_sym = stat.S_ISLNK(mode) if mode else False
                 entry = {
                     "name": name,
                     "compressed_size": info.compress_size,
                     "file_size": info.file_size,
                     "is_dir": name.endswith("/"),
+                    "is_symlink": is_sym,
                 }
+                if is_sym:
+                    entry["unsafe"] = "symlink"
+                    findings.append(
+                        _finding(
+                            "block",
+                            "zip_symlink",
+                            f"Zip contains symlink (blocked): {name}",
+                        )
+                    )
                 if unsafe:
                     entry["unsafe"] = unsafe
                     findings.append(
@@ -291,10 +334,14 @@ def analyze_tar(path: Path) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     members: list[dict[str, Any]] = []
     total = 0
+    count = 0
     try:
         with tarfile.open(path, "r:*") as tf:
-            for i, m in enumerate(tf.getmembers()):
-                if i >= MAX_ZIP_MEMBERS:
+            while True:
+                m = tf.next()
+                if m is None:
+                    break
+                if count >= MAX_ZIP_MEMBERS:
                     findings.append(
                         _finding(
                             "block",
@@ -303,12 +350,18 @@ def analyze_tar(path: Path) -> dict[str, Any]:
                         )
                     )
                     break
+                count += 1
                 name = m.name
                 unsafe = _zip_name_unsafe(name)
+                mtype = (
+                    m.type.decode("ascii", errors="replace")
+                    if isinstance(m.type, bytes)
+                    else str(m.type)
+                )
                 entry = {
                     "name": name,
                     "size": m.size,
-                    "type": m.type,
+                    "type": mtype,
                     "is_dir": m.isdir(),
                     "is_symlink": m.issym() or m.islnk(),
                 }
@@ -320,6 +373,14 @@ def analyze_tar(path: Path) -> dict[str, Any]:
                             f"Tar contains link (blocked): {name} -> {m.linkname}",
                         )
                     )
+                if m.isdev() or m.isfifo():
+                    findings.append(
+                        _finding(
+                            "block",
+                            "tar_special_file",
+                            f"Tar contains special device/fifo (blocked): {name}",
+                        )
+                    )
                 if unsafe:
                     findings.append(
                         _finding(
@@ -329,24 +390,25 @@ def analyze_tar(path: Path) -> dict[str, Any]:
                         )
                     )
                 total += max(0, m.size or 0)
-                members.append(entry)
+                if total > MAX_UNCOMPRESSED:
+                    findings.append(
+                        _finding(
+                            "block",
+                            "uncompressed_too_large",
+                            f"Tar total size {total} exceeds {MAX_UNCOMPRESSED}",
+                        )
+                    )
+                    break
+                if len(members) < 200:
+                    members.append(entry)
     except tarfile.TarError as e:
         findings.append(_finding("block", "bad_tar", f"Invalid tar: {e}"))
 
-    if total > MAX_UNCOMPRESSED:
-        findings.append(
-            _finding(
-                "block",
-                "uncompressed_too_large",
-                f"Tar total size {total} exceeds {MAX_UNCOMPRESSED}",
-            )
-        )
-
     return {
         "kind": "tar",
-        "members": members[:200],
-        "member_count": len(members),
-        "members_truncated": len(members) > 200,
+        "members": members,
+        "member_count": count,
+        "members_truncated": count > 200,
         "total_size": total,
         "findings": findings,
     }
@@ -371,7 +433,8 @@ def analyze_file(path: str | Path) -> dict[str, Any]:
         }
 
     size = p.stat().st_size
-    head = p.read_bytes()[:4096]
+    with p.open("rb") as fh:
+        head = fh.read(4096)
     magic = detect_magic(head)
     digest = sha256_file(p)
     ext = ext_of(p)
@@ -379,7 +442,7 @@ def analyze_file(path: str | Path) -> dict[str, Any]:
     # Double extension on filename
     name = p.name
     if re.search(
-        r"\.(pdf|doc|docx|png|jpg|jpeg|zip|txt)\.(exe|scr|bat|cmd|js|vbs|ps1|msi)$",
+        r"\.(pdf|doc|docx|xls|xlsx|png|jpg|jpeg|gif|zip|txt)\.(exe|scr|bat|cmd|js|vbs|ps1|msi|dll)$",
         name,
         re.I,
     ):
@@ -391,59 +454,53 @@ def analyze_file(path: str | Path) -> dict[str, Any]:
             )
         )
 
-    if magic in {"pe_exe", "elf"}:
+    if magic in {"pe_exe", "elf", "macho"}:
         findings.append(
             _finding("block", "executable_magic", f"File magic is executable ({magic})")
+        )
+    elif magic == "script":
+        findings.append(
+            _finding("warn", "script_magic", "File begins with script shebang (#!)")
         )
     if ext in {"exe", "scr", "bat", "cmd", "ps1", "msi", "dll", "js", "vbs"}:
         findings.append(
             _finding("warn", "executable_ext", f"Executable-like extension .{ext}")
         )
 
-    # Extension vs magic
-    if ext == "png" and magic not in {"png", "unknown"}:
-        findings.append(
-            _finding("warn", "ext_mismatch", f".png but magic is {magic}")
-        )
-    if ext in {"jpg", "jpeg"} and magic not in {"jpeg", "unknown"}:
-        findings.append(
-            _finding("warn", "ext_mismatch", f".{ext} but magic is {magic}")
-        )
-    if ext == "zip" and magic not in {"zip", "unknown"}:
-        findings.append(
-            _finding("warn", "ext_mismatch", f".zip but magic is {magic}")
-        )
-    if ext == "pdf" and magic not in {"pdf", "unknown"}:
-        findings.append(
-            _finding("warn", "ext_mismatch", f".pdf but magic is {magic}")
-        )
-
-    detail: dict[str, Any] = {}
-    if magic in {"png", "jpeg", "gif", "webp"} or ext in {
+    is_image_candidate = magic in {"png", "jpeg", "gif", "webp"} or ext in {
         "png",
         "jpg",
         "jpeg",
         "gif",
         "webp",
-    }:
+    }
+    if not is_image_candidate:
+        if ext == "zip" and magic not in {"zip", "unknown"}:
+            findings.append(
+                _finding("warn", "ext_mismatch", f".zip but magic is {magic}")
+            )
+        if ext == "pdf" and magic not in {"pdf", "unknown"}:
+            findings.append(
+                _finding("warn", "ext_mismatch", f".pdf but magic is {magic}")
+            )
+
+    detail: dict[str, Any] = {}
+    if is_image_candidate:
         detail = analyze_image(p, head)
         findings.extend(detail.pop("findings", []))
     elif magic == "zip" or ext == "zip":
         detail = analyze_zip(p)
         findings.extend(detail.pop("findings", []))
-    elif magic == "tar" or ext in {"tar", "tgz", "tar.gz"}:
-        # .tar.gz may be gzip magic first
-        if magic == "gzip" or name.endswith((".tgz", ".tar.gz")):
-            try:
-                detail = analyze_tar(p)
-                findings.extend(detail.pop("findings", []))
-            except Exception as e:  # noqa: BLE001
-                findings.append(
-                    _finding("warn", "tar_open", f"Could not open as tar: {e}")
-                )
-        else:
+    elif magic == "tar" or name.lower().endswith(
+        (".tar", ".tgz", ".tar.gz", ".tbz2", ".tar.bz2", ".txz", ".tar.xz")
+    ):
+        try:
             detail = analyze_tar(p)
             findings.extend(detail.pop("findings", []))
+        except Exception as e:  # noqa: BLE001
+            findings.append(
+                _finding("warn", "tar_open", f"Could not open as tar: {e}")
+            )
     elif magic == "gzip":
         findings.append(
             _finding(

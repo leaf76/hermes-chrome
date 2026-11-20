@@ -1,6 +1,6 @@
-# Chrome Web Store — paste pack (Hermes Chrome v1.8.7)
+# Chrome Web Store — paste pack (Hermes Chrome v1.8.9)
 
-Use with zip: `hermes-chrome-v1.8.7.zip`  
+Use with zip: `hermes-chrome-v1.8.9.zip`  
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy  
 Support / homepage: https://github.com/leaf76/hermes-chrome
 
@@ -27,7 +27,7 @@ What it does today
 • Optional local tab capture (PNG stays on-device) and light DOM helpers for agent workflows
 • Optional cookie-aware fetch so a local CLI can save a file using your browser session (on-device only)
 • Companion CLI can run local-only URL/file heuristics (no cloud scanner by default)
-• Popup shows bridge online/offline, extension version, and current agent workspace tabs
+• Side Panel shows bridge online/offline, live Action Inspector, Hermes local chat, and workspace tabs
 
 Who it is for
 Developers using Hermes Agent or other local CLIs that need authenticated browser flows while keeping personal browsing separate from agent work.
@@ -59,7 +59,7 @@ Hermes Chrome 是本機 companion：讓 AI agent 在「你的真實 Chrome」上
 • 新分頁預設 active:false，降低搶焦點
 • 只連本機 bridge（127.0.0.1:19876）
 • 可選本機分頁截圖與輕量 DOM 輔助（PNG 只留在本機）
-• Popup 顯示 bridge 狀態、版本與工作區分頁
+• Side Panel 顯示 bridge 狀態、即時動作檢視器、本機對話與工作區分頁
 
 隱私：無雲端帳號、無分析追蹤；不會把瀏覽資料送到遠端，只與你本機 bridge 通訊。
 
@@ -99,7 +99,8 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 | **tabGroups** | Default workspace isolation via a native Chrome Tab Group. |
 | **storage** | On-device settings only (bridge URL, title/color, polling). |
 | **alarms** | Wake MV3 service worker to continue local bridge polling only; no ads/cloud jobs. |
-| **scripting** | Optional on-device helpers for agent workflows (e.g. read page title / light DOM ops) only when the local bridge issues a command; results stay on-device. |
+| **scripting** | Optional on-device helpers for agent workflows (e.g. `read_page`, `dom_query`, `eval`, `click`, `type`, editor ops) when the local bridge issues a command or user requests Side Panel context; results stay on-device. |
+| **sidePanel** | Display the Hermes Chrome Side Panel (Action Inspector, local Hermes chat, and Workspace Manager) beside browser tabs. |
 
 ## Distribution
 
@@ -112,7 +113,7 @@ Suggested upload order for screenshots: 1 → 2 → 3 (then 4/5 if you want all 
 ## Notes for reviewers
 
 ```
-Hermes Chrome is a local agent companion (v1.8.7).
+Hermes Chrome is a local agent companion (v1.8.9).
 Two parts: this extension (browser half) + one-time local companion from GitHub
 (install.sh registers Native Messaging host com.leaf76.hermes_chrome + bridge).
 Extension alone cannot open a control port — nativeMessaging only talks to that
@@ -121,11 +122,11 @@ Host permissions: localhost bridge + <all_urls> for optional local tab capture
 (any site the CLI requests; PNG stays on-device; not site-locked).
 No remote code, no analytics, no cloud account.
 1. curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash
-2. Install/reload this extension, click icon, Pair if needed
+2. Install/reload this extension, click icon (opens Side Panel), Pair if needed
 3. CLI: hermes-chrome ping / open / list-tabs / capture / stop
 Repo: https://github.com/leaf76/hermes-chrome
 Privacy: https://leaf76.github.io/hermes-chrome/privacy-policy
-Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.7
+Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.9
 ```
 
 ## Dashboard checklist (paste values)
@@ -138,6 +139,7 @@ Release: https://github.com/leaf76/hermes-chrome/releases/tag/v1.8.7
 6. **Alarms justification** → Wake MV3 SW to long-poll localhost bridge only  
 7. **Host permissions** → localhost bridge + `<all_urls>` for optional local capture (see above)  
 8. **scripting** → local bridge-command helpers only; on-device  
+9. **sidePanel** → display Side Panel (Action Inspector, local chat, workspace tabs)
 
 ## Your last step
 

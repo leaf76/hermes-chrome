@@ -40,6 +40,12 @@ if [[ "$VERSION" != "$MANIFEST_VER" ]]; then
 fi
 
 OUT_DIR="${OUT_DIR:-$ROOT/dist/release}"
+case "$OUT_DIR" in
+  ""|"/"|"."|"$HOME")
+    echo "[release] error: refusing unsafe OUT_DIR='$OUT_DIR'" >&2
+    exit 1
+    ;;
+esac
 STAGE="${OUT_DIR}/_stage"
 NAME="hermes-chrome-companion-${VERSION}"
 TARBALL="${OUT_DIR}/${NAME}.tar.gz"
@@ -60,6 +66,8 @@ rsync -a \
   --exclude '*.pyc' \
   --exclude '.DS_Store' \
   --exclude 'store/dist/' \
+  --exclude 'store/icons/' \
+  --exclude 'store/screenshots/' \
   --exclude 'store/submission-pack/' \
   --exclude 'dist/' \
   --exclude 'npm/node_modules/' \
@@ -94,8 +102,6 @@ chmod +x "$OUT_DIR/install.sh"
 (
   cd "$OUT_DIR"
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 ./* >checksums.txt 2>/dev/null || true
-    # avoid hashing checksums itself if re-run — regenerate cleanly
     rm -f checksums.txt
     for f in *; do
       [[ "$f" == "checksums.txt" || "$f" == _* ]] && continue

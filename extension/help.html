@@ -142,7 +142,7 @@
           <strong>You need two parts.</strong> The Chrome Web Store package is only the
           <em>browser half</em>. Agents also need the <em>machine half</em> (local companion:
           bridge on <code>127.0.0.1:19876</code> + Native Messaging host + token). Extension
-          alone cannot control Chrome for agents — if the popup says
+          alone cannot control Chrome for agents — if the Side Panel / Options says
           <strong>Setup needed</strong>, that is expected until companion install succeeds.
         </div>
 
@@ -195,10 +195,10 @@ curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/i
 
         <h2>2. Enable this extension</h2>
         <ol>
-          <li>Reload Hermes Chrome (v1.8.5+) and accept <code>nativeMessaging</code> if asked. Chrome Web Store: <a href="https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa">Hermes Chrome</a>.</li>
-          <li>Click this extension icon once.</li>
-          <li>Wait for auto-pair, or press <strong>Pair</strong> in the popup.</li>
-          <li>Popup should show Bridge <strong>online</strong>.</li>
+          <li>Reload Hermes Chrome (v1.8.9+) and accept <code>nativeMessaging</code> if asked. Chrome Web Store: <a href="https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa" target="_blank" rel="noopener noreferrer">Hermes Chrome</a>.</li>
+          <li>Click this extension icon once to open the Side Panel.</li>
+          <li>Wait for auto-pair, or press <strong>Pair</strong> in the Side Panel or Options.</li>
+          <li>Side Panel should show Bridge <strong>Online</strong>.</li>
         </ol>
 
         <h2>3. Use with any page</h2>
@@ -216,8 +216,8 @@ hermes-chrome.sh stop
 # JSON for agents
 hermes-chrome.sh --json ping</pre>
         <p class="muted">
-          Closing the workspace does <strong>not</strong> stop the local bridge. Popup
-          <strong>Close workspace</strong> does the same when a group is open.
+          Closing the workspace does <strong>not</strong> stop the local bridge. The Side Panel
+          Workspace tab also has a <strong>Close Workspace</strong> button when a group is open.
         </p>
 
         <h2>4. Any agent (not only Grok)</h2>
@@ -240,7 +240,7 @@ hermes-chrome.sh --json ping</pre>
         <ul>
           <li><strong>Bridge offline</strong> — re-run companion install; click icon; check Python.</li>
           <li><strong>Native host not found</strong> — run <code>install-native-host</code>; reload extension.</li>
-          <li><strong>Need pair</strong> — popup Pair, or CLI <code>pair-open</code> then Pair.</li>
+          <li><strong>Need pair</strong> — Side Panel / Options Pair, or CLI <code>pair-open</code> then Pair.</li>
           <li><strong>Tab not found</strong> — open URL into Hermes group, or allow cross-workspace in Options.</li>
         </ul>
 
@@ -259,7 +259,7 @@ hermes-chrome.sh --json ping</pre>
         <div class="card">
           <strong>需要兩半。</strong> 商店安裝的只是<em>瀏覽器端</em>。Agent 還需要<em>本機端 companion</em>
           （bridge <code>127.0.0.1:19876</code> + Native Messaging host + token）。
-          <strong>光裝 extension 不夠</strong>——popup 顯示 <strong>Setup needed</strong> 時，代表還沒完成 companion 安裝，這是預期行為。
+          <strong>光裝 extension 不夠</strong>——Side Panel / Options 顯示 <strong>Setup needed</strong> 時，代表還沒完成 companion 安裝，這是預期行為。
         </div>
 
         <div class="card">
@@ -271,7 +271,7 @@ hermes-chrome.sh --json ping</pre>
             <li><strong>安裝位置：</strong> <code>~/.hermes/hermes-chrome</code> +
               runtime <code>~/.hermes/run/hermes-chrome</code> · CLI：
               <code>hermes-chrome</code></li>
-            <li><strong>沒有 npm</strong>——不能 <code>npx</code>。</li>
+            <li><strong>npm 薄型安裝器：</strong> 可選 <code>npx hermes-chrome-companion</code>（會從 GitHub 下載並執行安裝腳本）。</li>
             <li><strong>MCP（可選）：</strong> 同一安裝會註冊 Grok / Cursor / Claude Desktop（若有）。
               檔案是 install root 裡的 <code>mcp_server.py</code>，不是 MCP 商店套件。</li>
             <li>Windows：clone repo 後跑 <code>.\scripts\install-windows.ps1</code></li>
@@ -306,10 +306,10 @@ curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/i
 
         <h2>2. 啟用這個 extension</h2>
         <ol>
-          <li>重新載入 Hermes Chrome（v1.8.5+），必要時允許 <code>nativeMessaging</code>。商店：<a href="https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa">Chrome Web Store</a>。</li>
-          <li>點一次 extension icon。</li>
-          <li>等 auto-pair，或按 popup 的 <strong>Pair</strong>。</li>
-          <li>Popup 應顯示 Bridge <strong>online</strong>。</li>
+          <li>重新載入 Hermes Chrome（v1.8.9+），必要時允許 <code>nativeMessaging</code>。商店：<a href="https://chromewebstore.google.com/detail/hermes-chrome/mkoaoadlkijccmmbkioagnlngbbeocfa" target="_blank" rel="noopener noreferrer">Chrome Web Store</a>。</li>
+          <li>點一次 extension icon 開啟 Side Panel。</li>
+          <li>等 auto-pair，或按 Side Panel / Options 的 <strong>Pair</strong>。</li>
+          <li>Side Panel 應顯示 Bridge <strong>Online</strong>。</li>
         </ol>
 
         <h2>3. 操作任意頁面</h2>
@@ -327,8 +327,8 @@ hermes-chrome.sh stop
 # 給 agent 的 JSON
 hermes-chrome.sh --json ping</pre>
         <p class="muted">
-          關閉工作區<strong>不會</strong>停本機 bridge。Popup 有工作區時可按
-          <strong>Close workspace</strong>。
+          關閉工作區<strong>不會</strong>停本機 bridge。Side Panel 的 Workspace 分頁有工作區時可按
+          <strong>Close Workspace</strong>。
         </p>
 
         <h2>4. 各種 agent（不限 Grok）</h2>
@@ -351,7 +351,7 @@ hermes-chrome.sh --json ping</pre>
         <ul>
           <li><strong>Bridge offline</strong> — 重跑 companion；點 icon；檢查 Python。</li>
           <li><strong>Native host not found</strong> — 跑 <code>install-native-host</code>；reload extension。</li>
-          <li><strong>要 Pair</strong> — popup Pair，或 CLI <code>pair-open</code> 再 Pair。</li>
+          <li><strong>要 Pair</strong> — Side Panel / Options Pair，或 CLI <code>pair-open</code> 再 Pair。</li>
           <li><strong>找不到分頁</strong> — 用 open 開進 Hermes group，或 Options 允許跨 workspace。</li>
         </ul>
 

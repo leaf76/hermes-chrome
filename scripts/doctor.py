@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -21,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 # Allow import from repo
 _ROOT_GUESS = Path(__file__).resolve().parents[1]
@@ -55,12 +56,13 @@ def resolve_run() -> Path:
 
 
 def apply_fixes(root: Path, run: Path) -> list[str]:
-    """Safe, idempotent repairs. Never deletes user data or touches tokens."""
+    """Safe, idempotent repairs. Never deletes user data or touches existing tokens."""
     fixes: list[str] = []
+    run.mkdir(parents=True, exist_ok=True)
 
-    # 1) bridge.env permissions
+    # 1) bridge.env permissions (POSIX only)
     env_file = run / "bridge.env"
-    if env_file.is_file():
+    if env_file.is_file() and sys.platform != "win32":
         try:
             mode = env_file.stat().st_mode & 0o777
             if mode != 0o600:
@@ -69,10 +71,10 @@ def apply_fixes(root: Path, run: Path) -> list[str]:
         except OSError as e:
             fixes.append(f"chmod {env_file} failed: {e}")
 
-    # 2) PATH shim
+    # 2) PATH shim (POSIX only)
     shim = Path.home() / ".local" / "bin" / "hermes-chrome"
     target = root / "scripts" / "hermes-chrome.sh"
-    if not shim.exists() and target.is_file():
+    if sys.platform != "win32" and not shim.exists() and target.is_file():
         try:
             shim.parent.mkdir(parents=True, exist_ok=True)
             shim.symlink_to(target)
@@ -82,44 +84,69 @@ def apply_fixes(root: Path, run: Path) -> list[str]:
 
     # 3) Native messaging manifest
     nm = run / "native-messaging" / "com.leaf76.hermes_chrome.json"
-    host_script = root / "scripts" / "install-native-host.sh"
-    if not nm.is_file() and sys.platform != "win32" and host_script.is_file():
-        try:
-            proc = subprocess.run(
-                ["bash", str(host_script), "install"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if proc.returncode == 0:
-                fixes.append("re-registered native messaging host")
-            else:
-                detail = (proc.stderr or proc.stdout or "").strip()[:200]
-                fixes.append(f"native host register failed: {detail}")
-        except (OSError, subprocess.TimeoutExpired) as e:
-            fixes.append(f"native host register failed: {e}")
+    if not nm.is_file():
+        if sys.platform == "win32":
+            ps_script = root / "scripts" / "install-native-host.ps1"
+            if ps_script.is_file():
+                try:
+                    proc = subprocess.run(
+                        [
+                            "powershell.exe",
+                            "-NoProfile",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                            str(ps_script),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if proc.returncode == 0:
+                        fixes.append("re-registered Windows native messaging host")
+                    else:
+                        detail = (proc.stderr or proc.stdout or "").strip()[:200]
+                        fixes.append(f"native host register failed: {detail}")
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    fixes.append(f"native host register failed: {e}")
+        else:
+            host_script = root / "scripts" / "install-native-host.sh"
+            if host_script.is_file():
+                try:
+                    proc = subprocess.run(
+                        ["bash", str(host_script), "install"],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if proc.returncode == 0:
+                        fixes.append("re-registered native messaging host")
+                    else:
+                        detail = (proc.stderr or proc.stdout or "").strip()[:200]
+                        fixes.append(f"native host register failed: {detail}")
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    fixes.append(f"native host register failed: {e}")
 
-    # 4) Missing token → generate one
+    # 4) Missing token → generate directly in Python (cross-platform, UTF-8 no BOM)
     if not env_file.is_file() or "HERMES_CHROME_BRIDGE_TOKEN=" not in (
         env_file.read_text(encoding="utf-8", errors="replace") if env_file.is_file() else ""
     ):
-        cli = root / "scripts" / "hermes-chrome.sh"
-        if cli.is_file():
-            try:
-                proc = subprocess.run(
-                    ["bash", str(cli), "token-setup", "generate"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    env={**os.environ, "HERMES_CHROME_ROOT": str(root), "HERMES_CHROME_RUN": str(run)},
-                )
-                if proc.returncode == 0:
-                    fixes.append("generated bridge token (bridge.env)")
-                else:
-                    detail = (proc.stderr or proc.stdout or "").strip()[:200]
-                    fixes.append(f"token generate failed: {detail}")
-            except (OSError, subprocess.TimeoutExpired) as e:
-                fixes.append(f"token generate failed: {e}")
+        try:
+            tok = secrets.token_urlsafe(32)
+            body = (
+                "# Hermes Chrome bridge auth (local only). Auto-managed; do not commit.\n"
+                f"export HERMES_CHROME_BRIDGE_TOKEN='{tok}'\n"
+            )
+            if sys.platform != "win32":
+                fd = os.open(str(env_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(body)
+                os.chmod(env_file, 0o600)
+            else:
+                env_file.write_text(body, encoding="utf-8")
+            fixes.append(f"generated bridge token ({env_file})")
+        except OSError as e:
+            fixes.append(f"token generate failed: {e}")
 
     # 5) Bridge down → start + open pairing
     os.environ.setdefault("HERMES_CHROME_ROOT", str(root))
@@ -188,10 +215,16 @@ def check(*, check_update: bool = True) -> dict[str, Any]:
     add("native_host", host_py.is_file(), str(host_py))
     add("cli", cli.is_file(), str(cli))
     if not bridge_py.is_file():
-        report["hints"].append(
-            "Companion not found. Install from GitHub: "
-            "curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash"
-        )
+        if sys.platform == "win32":
+            report["hints"].append(
+                "Companion not found. Run from GitHub clone: "
+                "powershell -ExecutionPolicy Bypass -File .\\scripts\\install-windows.ps1"
+            )
+        else:
+            report["hints"].append(
+                "Companion not found. Install from GitHub: "
+                "curl -fsSL https://raw.githubusercontent.com/leaf76/hermes-chrome/main/scripts/install.sh | bash"
+            )
 
     # Token
     env_file = run / "bridge.env"
@@ -201,27 +234,39 @@ def check(*, check_update: bool = True) -> dict[str, Any]:
         token_ok = "HERMES_CHROME_BRIDGE_TOKEN=" in text
     add("bridge.env token", token_ok, str(env_file))
     if not token_ok:
-        report["hints"].append("Run: hermes-chrome.sh token-setup generate  (or re-run install.sh)")
+        report["hints"].append(
+            f"Run: {python} {root / 'scripts' / 'doctor.py'} --fix  (or re-run installer)"
+            if sys.platform == "win32"
+            else "Run: hermes-chrome.sh token-setup generate  (or re-run install.sh)"
+        )
 
     # Native host manifest
     nm = run / "native-messaging" / "com.leaf76.hermes_chrome.json"
     add("native messaging manifest", nm.is_file(), str(nm))
     if not nm.is_file():
-        report["hints"].append(
-            f"From companion root run: bash {root}/scripts/install-native-host.sh install"
-        )
+        if sys.platform == "win32":
+            report["hints"].append(
+                f"Run: powershell -ExecutionPolicy Bypass -File {root / 'scripts' / 'install-native-host.ps1'}"
+            )
+        else:
+            report["hints"].append(
+                f"From companion root run: bash {root}/scripts/install-native-host.sh install"
+            )
 
     # PATH shim
     shim = Path.home() / ".local" / "bin" / "hermes-chrome"
     on_path = bool(shutil.which("hermes-chrome"))
     shim_exists = shim.is_file()
-    add("PATH shim ~/.local/bin/hermes-chrome", shim_exists or on_path, str(shim))
-    if shim_exists and not on_path:
-        report["hints"].append(
-            '~/.local/bin is not in your current PATH. Add it via: echo \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc'
-        )
+    if sys.platform == "win32":
+        add("PATH shim ~/.local/bin/hermes-chrome", True, "optional on Windows (use npx or scripts/hermes-chrome.sh under Git Bash)")
+    else:
+        add("PATH shim ~/.local/bin/hermes-chrome", shim_exists or on_path, str(shim))
+        if shim_exists and not on_path:
+            report["hints"].append(
+                '~/.local/bin is not in your current PATH. Add it via: echo \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc'
+            )
 
-    # Bridge HTTP
+    # Bridge HTTP (bypass system/env HTTP proxies for loopback health check)
     host = os.environ.get("HERMES_CHROME_BRIDGE_HOST", "127.0.0.1")
     port = int(os.environ.get("HERMES_CHROME_BRIDGE_PORT", "19876"))
     url = f"http://{host}:{port}/v1/health"
@@ -242,13 +287,16 @@ def check(*, check_update: bool = True) -> dict[str, Any]:
             pass
     try:
         req = Request(url, method="GET", headers=headers)
-        with urlopen(req, timeout=2) as resp:
+        opener = build_opener(ProxyHandler({}))
+        with opener.open(req, timeout=2) as resp:
             health = json.loads(resp.read().decode("utf-8"))
         add("bridge :19876", True, url)
     except (URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
         add("bridge :19876", False, f"{url} — {e}")
         report["hints"].append(
-            "Start companion: re-run install.sh or hermes-chrome.sh bridge-start / install-launchd"
+            f"Start companion: powershell -ExecutionPolicy Bypass -File {root / 'scripts' / 'install-windows.ps1'}"
+            if sys.platform == "win32"
+            else "Start companion: re-run install.sh or hermes-chrome.sh bridge-start / install-launchd"
         )
 
     ext = bool(health.get("extension_connected") or health.get("extensionConnected"))

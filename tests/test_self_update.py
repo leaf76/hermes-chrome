@@ -20,6 +20,9 @@ class OfficialOriginTests(unittest.TestCase):
     def test_rejects_other_remotes(self) -> None:
         self.assertFalse(official_origin("https://github.com/evil/hermes-chrome"))
         self.assertFalse(official_origin("https://example.com/leaf76/hermes-chrome.git"))
+        self.assertFalse(official_origin("https://evil.example/https://github.com/leaf76/hermes-chrome.git"))
+        self.assertFalse(official_origin("https://github.com/leaf76/hermes-chrome.git.evil.com"))
+        self.assertFalse(official_origin("ext::sh -c id"))
         self.assertFalse(official_origin(""))
 
 

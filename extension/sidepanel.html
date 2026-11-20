@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
   <title>Hermes Chrome Side Panel</title>
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
@@ -203,6 +204,11 @@
                   </svg>
                 </button>
               </div>
+              <button id="btn-stop-chat" type="button" class="btn-stop hidden" title="Stop waiting">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                </svg>
+              </button>
               <button id="btn-send-chat" type="submit" class="btn-send" title="Send message">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
                   <line x1="12" y1="19" x2="12" y2="5"></line>
@@ -227,6 +233,12 @@
                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
               </svg>
             </button>
+            <button id="btn-close-workspace" class="icon-btn" title="Close Workspace">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -234,6 +246,7 @@
           <input type="url" id="ws-new-url" placeholder="https://..." />
           <button id="btn-ws-open" class="btn-primary">Open</button>
         </div>
+        <div id="ws-url-error" class="ws-url-error hidden" role="alert"></div>
 
         <div id="workspace-tabs-list" class="workspace-tabs-list">
           <!-- Populated by JS -->

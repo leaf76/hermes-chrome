@@ -24,7 +24,10 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -70,6 +73,12 @@ _DROP_KEYS = frozenset(
     {
         "pngBase64",
         "png_base64",
+        "bodyBase64",
+        "body_base64",
+        "cookie",
+        "cookies",
+        "api_key",
+        "apiKey",
         "token",
         "bridgeToken",
         "authorization",
@@ -99,7 +108,14 @@ def strip_secrets(obj: Any) -> Any:
         out: dict[str, Any] = {}
         for k, v in obj.items():
             kl = str(k).lower()
-            if k in _DROP_KEYS or kl in {"token", "pngbase64", "authorization"}:
+            if k in _DROP_KEYS or kl in {
+                "token",
+                "pngbase64",
+                "bodybase64",
+                "authorization",
+                "cookie",
+                "api_key",
+            }:
                 continue
             out[k] = strip_secrets(v)
         return out
@@ -189,16 +205,17 @@ def compact_eval(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def compact_read_page(data: dict[str, Any]) -> dict[str, Any]:
+def compact_read_page(data: dict[str, Any], *, text_max: int = EVAL_VALUE_MAX) -> dict[str, Any]:
     """Compact read_page result: title/url/text excerpt + load meta."""
+    cap = max(200, min(int(text_max), 20_000))
     out: dict[str, Any] = {"ok": data.get("ok", True) is not False}
     if data.get("tabId") is not None:
         out["tabId"] = data.get("tabId")
     out["title"] = _ellipsis(str(data.get("title") or ""), TAB_TITLE_MAX)
     out["url"] = _ellipsis(str(data.get("url") or ""), TAB_URL_MAX)
     text = str(data.get("text") or "")
-    if len(text) > EVAL_VALUE_MAX:
-        text = text[:EVAL_VALUE_MAX] + "…"
+    if len(text) > cap:
+        text = text[:cap] + "…"
     out["text"] = text
     out["text_chars"] = int(data.get("textLength") or len(text))
     if data.get("status"):
@@ -287,6 +304,106 @@ def send_command(action: str, extra: dict[str, Any] | None = None, *, wait_s: fl
     return data if isinstance(data, dict) else {"ok": True, "data": data}
 
 
+_VALID_CAPTURE_PREFER = frozenset({"auto", "active", "gc", "nq"})
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_capture_out_path(out: str) -> Path:
+    raw = Path(out).expanduser()
+    if raw.is_symlink():
+        raise ValueError(f"refusing symlink capture target: {raw}")
+    resolved = raw.resolve()
+    if resolved.suffix.lower() != ".png":
+        raise ValueError("capture out path must end with .png")
+    allowed_roots: list[Path] = [
+        RUN_DIR.resolve(),
+        Path.cwd().resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+    ]
+    extra_roots = os.environ.get("HERMES_CHROME_CAPTURE_DIRS", "").strip()
+    if extra_roots:
+        for item in extra_roots.split(os.pathsep):
+            if item.strip():
+                allowed_roots.append(Path(item.strip()).expanduser().resolve())
+    if not any(_is_within(resolved, r) for r in allowed_roots):
+        raise ValueError(
+            f"capture out path must be under RUN_DIR, cwd, or temp dir: {resolved}"
+        )
+    return resolved
+
+
+def _validate_editor_file_path(file_path: str) -> Path:
+    raw = Path(str(file_path)).expanduser()
+    resolved = raw.resolve()
+    home = Path.home().resolve()
+    forbidden_dirs: list[Path] = [
+        home / ".ssh",
+        home / ".aws",
+        home / ".gnupg",
+        home / ".kube",
+        home / ".docker",
+        home / ".config" / "gcloud",
+        home / ".hermes",
+        home / ".gemini",
+        home / ".claude",
+        home / ".codex",
+        home / ".grok",
+        RUN_DIR.resolve(),
+    ]
+    if os.name == "nt":
+        win_dir = Path(os.environ.get("SystemRoot") or r"C:\Windows")
+        local_app = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        roam_app = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
+        forbidden_dirs.extend(
+            [
+                win_dir,
+                local_app / "Google" / "Chrome" / "User Data",
+                roam_app / "Microsoft" / "Credentials",
+                local_app / "Microsoft" / "Credentials",
+            ]
+        )
+    else:
+        forbidden_dirs.extend([Path("/etc"), Path("/proc"), Path("/sys")])
+        if sys.platform == "darwin":
+            forbidden_dirs.append(
+                home / "Library" / "Application Support" / "Google" / "Chrome"
+            )
+
+    if any(_is_within(resolved, d) for d in forbidden_dirs):
+        raise ValueError(f"refusing sensitive directory for editor_set file_path: {resolved}")
+
+    name_l = resolved.name.lower()
+    if (
+        name_l == ".env"
+        or name_l.startswith(".env.")
+        or name_l in {"bridge.env", ".netrc", ".npmrc", ".pypirc", ".git-credentials"}
+        or name_l.startswith(("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"))
+        or "credentials" in name_l
+        or "secret" in name_l
+        or resolved.suffix.lower() in {".pem", ".key", ".p12", ".pfx", ".kdbx"}
+    ):
+        raise ValueError(f"refusing sensitive filename for editor_set file_path: {resolved.name}")
+
+    allowed_env = os.environ.get("HERMES_CHROME_EDITOR_FILE_ROOTS", "").strip()
+    if allowed_env:
+        roots = [Path(x).expanduser().resolve() for x in allowed_env.split(os.pathsep) if x.strip()]
+        if roots and not any(_is_within(resolved, r) for r in roots):
+            raise ValueError(f"file_path outside HERMES_CHROME_EDITOR_FILE_ROOTS: {resolved}")
+
+    if not resolved.is_file():
+        raise FileNotFoundError(f"file not found: {resolved}")
+    if resolved.stat().st_size > 1_500_000:
+        raise ValueError(f"file too large ({resolved.stat().st_size} bytes, max 1500000)")
+    return resolved
+
+
 def _save_capture_payload(
     data: dict[str, Any],
     *,
@@ -296,6 +413,9 @@ def _save_capture_payload(
     """Persist pngBase64 from extension capture payload; never return base64 to agents."""
     import base64
     from datetime import datetime, timezone
+
+    if prefer not in _VALID_CAPTURE_PREFER:
+        prefer = "auto"
 
     b64 = data.get("pngBase64") or ""
     meta = {
@@ -310,10 +430,11 @@ def _save_capture_payload(
         return meta
     raw = base64.b64decode(b64)
     if out:
-        path = Path(out).expanduser()
+        path = _validate_capture_out_path(out)
     else:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        path = RUN_DIR / f"capture-{prefer}-{stamp}.png"
+        nonce = secrets.token_hex(3)
+        path = RUN_DIR / f"capture-{prefer}-{stamp}-{nonce}.png"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
     meta["path"] = str(path.resolve())
@@ -330,6 +451,11 @@ def capture_png(
     title_includes: str | None = None,
 ) -> dict[str, Any]:
     """Capture tab PNG for any site; strip base64 after saving path."""
+    if prefer not in _VALID_CAPTURE_PREFER:
+        return {"ok": False, "error": f"invalid prefer: {prefer!r}"}
+    if out:
+        _validate_capture_out_path(out)
+
     extra: dict[str, Any] = {
         "prefer": prefer,
         "settleMs": 600,
@@ -655,8 +781,10 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def _tool_result(obj: Any, *, is_error: bool = False) -> dict[str, Any]:
-    obj = cap_json(strip_secrets(obj)) if not isinstance(obj, str) else obj
+def _tool_result(
+    obj: Any, *, is_error: bool = False, budget: int = AGENT_JSON_MAX
+) -> dict[str, Any]:
+    obj = cap_json(strip_secrets(obj), budget=budget) if not isinstance(obj, str) else obj
     text = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     return {
         "content": [{"type": "text", "text": text}],
@@ -669,10 +797,11 @@ def _send_tool_result(
     extra: dict[str, Any] | None = None,
     *,
     wait_s: float = 30.0,
+    budget: int = AGENT_JSON_MAX,
 ) -> dict[str, Any]:
     data = send_command(action, extra, wait_s=wait_s)
     is_err = isinstance(data, dict) and (data.get("ok") is False or bool(data.get("error")))
-    return _tool_result(data, is_error=is_err)
+    return _tool_result(data, is_error=is_err, budget=budget)
 
 
 def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
@@ -689,7 +818,9 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             return _tool_result(compact, is_error=not compact.get("ok"))
 
         if name == "hermes_chrome_ping":
-            return _tool_result(send_command("ping"))
+            data = send_command("ping")
+            is_err = isinstance(data, dict) and (data.get("ok") is False or bool(data.get("error")))
+            return _tool_result(data, is_error=is_err)
 
         if name == "hermes_chrome_list_tabs":
             extra: dict[str, Any] = {}
@@ -709,7 +840,8 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             data = send_command("list_tabs", extra)
             if isinstance(data, dict) and data.get("tabs") is not None:
                 return _tool_result(compact_tabs(data, limit=extra["limit"]))
-            return _tool_result(data, is_error=not data.get("ok", True) if isinstance(data, dict) else False)
+            is_err = isinstance(data, dict) and (data.get("ok") is False or bool(data.get("error")))
+            return _tool_result(data, is_error=is_err)
 
         if name == "hermes_chrome_read_page":
             extra: dict[str, Any] = {}
@@ -724,8 +856,10 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
                     {"ok": False, "error": "url or tab_id required"}, is_error=True
                 )
             extra["waitMs"] = max(1000, min(int(args.get("wait_ms") or 15000), 60000))
+            text_max = EVAL_VALUE_MAX
             if args.get("text_max") is not None:
-                extra["textMax"] = max(200, min(int(args["text_max"]), 20000))
+                text_max = max(200, min(int(args["text_max"]), 20000))
+                extra["textMax"] = text_max
             if args.get("separate_window"):
                 extra["separateWindow"] = True
             # Budget must cover the page-load wait plus extraction overhead.
@@ -734,20 +868,23 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             )
             if isinstance(data, dict) and (data.get("ok") is False or data.get("error")):
                 return _tool_result(data, is_error=True)
-            return _tool_result(compact_read_page(data))
+            return _tool_result(
+                compact_read_page(data, text_max=text_max),
+                budget=max(AGENT_JSON_MAX, text_max + 2000),
+            )
 
         if name == "hermes_chrome_capture":
             prefer = str(args.get("prefer") or "auto")
             out = args.get("out")
-            return _tool_result(
-                capture_png(
-                    prefer=prefer,
-                    out=out,
-                    tab_id=int(args["tab_id"]) if args.get("tab_id") is not None else None,
-                    url_includes=str(args["url_includes"]) if args.get("url_includes") else None,
-                    title_includes=str(args["title_includes"]) if args.get("title_includes") else None,
-                )
+            res = capture_png(
+                prefer=prefer,
+                out=out,
+                tab_id=int(args["tab_id"]) if args.get("tab_id") is not None else None,
+                url_includes=str(args["url_includes"]) if args.get("url_includes") else None,
+                title_includes=str(args["title_includes"]) if args.get("title_includes") else None,
             )
+            is_err = isinstance(res, dict) and (res.get("ok") is False or bool(res.get("error")))
+            return _tool_result(res, is_error=is_err)
 
         if name == "hermes_chrome_start":
             extra: dict[str, Any] = {}
@@ -760,7 +897,7 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             if args.get("height") is not None:
                 extra["height"] = int(args["height"])
             data = send_command("start", extra)
-            if isinstance(data, dict) and not data.get("error"):
+            if isinstance(data, dict) and data.get("ok") is not False and not data.get("error"):
                 return _tool_result(compact_nav(data))
             return _tool_result(data, is_error=True)
 
@@ -778,7 +915,7 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             if args.get("height") is not None:
                 extra["height"] = int(args["height"])
             data = send_command("open", extra)
-            if isinstance(data, dict) and not data.get("error"):
+            if isinstance(data, dict) and data.get("ok") is not False and not data.get("error"):
                 return _tool_result(compact_nav(data))
             return _tool_result(data, is_error=True)
 
@@ -786,9 +923,9 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             close_tabs = args.get("close_tabs")
             if close_tabs is None:
                 close_tabs = True
-            return _tool_result(
-                send_command("stop", {"closeTabs": bool(close_tabs)})
-            )
+            data = send_command("stop", {"closeTabs": bool(close_tabs)})
+            is_err = isinstance(data, dict) and (data.get("ok") is False or bool(data.get("error")))
+            return _tool_result(data, is_error=is_err)
 
         if name == "hermes_chrome_navigate":
             url = str(args.get("url") or "")
@@ -798,7 +935,7 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             if args.get("tab_id") is not None:
                 extra["tabId"] = int(args["tab_id"])
             data = send_command("navigate", extra)
-            if isinstance(data, dict) and not data.get("error"):
+            if isinstance(data, dict) and data.get("ok") is not False and not data.get("error"):
                 return _tool_result(compact_nav(data))
             return _tool_result(data, is_error=True)
 
@@ -866,16 +1003,21 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
             return _send_tool_result("dom_query", extra)
 
         if name == "hermes_chrome_editor_get":
+            max_chars = max(200, min(int(args.get("max_chars") or 4000), 8000))
             extra = {
                 "tabId": int(args["tab_id"]),
-                "maxChars": max(200, min(int(args.get("max_chars") or 4000), 8000)),
+                "maxChars": max_chars,
                 "listModels": bool(args.get("list_models")),
             }
             if args.get("selector"):
                 extra["selector"] = str(args["selector"])
             if args.get("model_index") is not None:
                 extra["modelIndex"] = int(args["model_index"])
-            return _send_tool_result("editor_get", extra)
+            return _send_tool_result(
+                "editor_get",
+                extra,
+                budget=max(AGENT_JSON_MAX, max_chars * 2 + 2000),
+            )
 
         if name == "hermes_chrome_editor_set":
             text = args.get("text")
@@ -886,12 +1028,7 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
                     is_error=True,
                 )
             if text is None and file_path:
-                p = Path(str(file_path)).expanduser()
-                if not p.is_file():
-                    return _tool_result(
-                        {"ok": False, "error": f"file not found: {p}"},
-                        is_error=True,
-                    )
+                p = _validate_editor_file_path(str(file_path))
                 text = p.read_text(encoding="utf-8")
             else:
                 text = str(text)
@@ -924,9 +1061,33 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _framing_mode = "content-length"
+_MAX_MCP_FRAME_BYTES = 16 * 1024 * 1024
 
 
-def _read_message() -> dict[str, Any] | None:
+def _read_exact(stream: Any, n: int) -> bytes | None:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _write_all(stream: Any, data: bytes) -> None:
+    view = memoryview(data)
+    written = 0
+    while written < len(data):
+        n = stream.write(view[written:])
+        if n is None:
+            written = len(data)
+            break
+        if n == 0:
+            raise OSError("short write to MCP stdout")
+        written += n
+
+
+def _read_message() -> dict[str, Any] | list[Any] | None:
     global _framing_mode
     headers: dict[str, str] = {}
     while True:
@@ -948,10 +1109,13 @@ def _read_message() -> dict[str, Any] | None:
             continue
         k, _, v = text.partition(":")
         headers[k.strip().lower()] = v.strip()
-    length = int(headers.get("content-length") or "0")
-    if length <= 0:
+    try:
+        length = int(headers.get("content-length") or "0")
+    except ValueError:
         return None
-    body = sys.stdin.buffer.read(length)
+    if length <= 0 or length > _MAX_MCP_FRAME_BYTES:
+        return None
+    body = _read_exact(sys.stdin.buffer, length)
     if not body:
         return None
     _framing_mode = "content-length"
@@ -961,13 +1125,22 @@ def _read_message() -> dict[str, Any] | None:
 def _write_message(msg: dict[str, Any]) -> None:
     raw = json.dumps(msg, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if _framing_mode == "ndjson":
-        sys.stdout.buffer.write(raw + b"\n")
+        _write_all(sys.stdout.buffer, raw + b"\n")
     else:
-        sys.stdout.buffer.write(f"Content-Length: {len(raw)}\r\n\r\n".encode("ascii") + raw)
+        _write_all(sys.stdout.buffer, f"Content-Length: {len(raw)}\r\n\r\n".encode("ascii") + raw)
     sys.stdout.buffer.flush()
 
 
-def _handle(msg: dict[str, Any]) -> None:
+def _handle(msg: Any) -> None:
+    if not isinstance(msg, dict):
+        _write_message(
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "Invalid Request (object expected)"},
+            }
+        )
+        return
     mid = msg.get("id")
     method = msg.get("method")
     params = msg.get("params") or {}
@@ -976,18 +1149,19 @@ def _handle(msg: dict[str, Any]) -> None:
     if mid is None:
         if method == "notifications/initialized":
             _log("client initialized")
-            # Eager bridge so extension can auto-pair while user talks to agent
-            h = ensure_bridge()
-            _log(f"bridge health after init: connected={h.get('extension_connected')} auth={h.get('auth')}")
+            # Eager bridge in background so notifications don't block stdio.
+            threading.Thread(target=ensure_bridge, daemon=True).start()
         return
 
     if method == "initialize":
+        req_ver = params.get("protocolVersion") if isinstance(params, dict) else None
+        proto_ver = req_ver.strip() if isinstance(req_ver, str) and req_ver.strip() else PROTOCOL_VERSION
         _write_message(
             {
                 "jsonrpc": "2.0",
                 "id": mid,
                 "result": {
-                    "protocolVersion": PROTOCOL_VERSION,
+                    "protocolVersion": proto_ver,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                     "instructions": (
@@ -1034,11 +1208,8 @@ def _handle(msg: dict[str, Any]) -> None:
 
 def main() -> int:
     _log(f"starting MCP server root={ROOT} bridge={BRIDGE_URL}")
-    # Pre-warm bridge so extension can connect before first tool call
-    try:
-        ensure_bridge()
-    except Exception as e:  # noqa: BLE001
-        _log(f"ensure_bridge at startup failed: {e}")
+    # Pre-warm bridge asynchronously so initialize handshake is never delayed.
+    threading.Thread(target=ensure_bridge, daemon=True).start()
 
     while True:
         try:
@@ -1053,7 +1224,7 @@ def main() -> int:
             _handle(msg)
         except Exception as e:  # noqa: BLE001
             _log(f"handle error: {e}")
-            mid = msg.get("id")
+            mid = msg.get("id") if isinstance(msg, dict) else None
             if mid is not None:
                 _write_message(
                     {
